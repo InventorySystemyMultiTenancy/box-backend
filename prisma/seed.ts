@@ -6,6 +6,9 @@ import { prisma } from "@/lib/prisma";
 // nascer demonstrável, sem tela vazia.
 async function main() {
   console.log("Seed: limpando dados existentes...");
+  await prisma.financialEntry.deleteMany();
+  await prisma.problemPartUsage.deleteMany();
+  await prisma.inventoryPart.deleteMany();
   await prisma.quoteRequest.deleteMany();
   await prisma.chatMessage.deleteMany();
   await prisma.media.deleteMany();
@@ -18,6 +21,7 @@ async function main() {
 
   const customerPassword = await bcrypt.hash("cliente123", 10);
   const mechanicPassword = await bcrypt.hash("mecanico123", 10);
+  const adminPassword = await bcrypt.hash("admin123", 10);
 
   const customer = await prisma.user.create({
     data: {
@@ -36,6 +40,23 @@ async function main() {
       passwordHash: mechanicPassword,
       role: "MECHANIC",
     },
+  });
+
+  await prisma.user.create({
+    data: {
+      name: "Admin BOX",
+      email: "admin@box.demo",
+      passwordHash: adminPassword,
+      role: "ADMIN",
+    },
+  });
+
+  await prisma.inventoryPart.createMany({
+    data: [
+      { name: "Disco de freio dianteiro", sku: "FREIO-DISCO-D", unitCost: 180, stockQty: 8 },
+      { name: "Bobina de ignição", sku: "IGN-BOBINA", unitCost: 145, stockQty: 6 },
+      { name: "Pastilha de freio", sku: "FREIO-PAST", unitCost: 90, stockQty: 12 },
+    ],
   });
 
   // Cliente sem nenhuma ordem em andamento — demonstra o fluxo de "solicitar orçamento".
@@ -213,6 +234,7 @@ async function main() {
   console.log(`  Cliente: cliente2@box.demo / cliente123 (sem ordens — testa "solicitar orçamento")`);
   console.log(`  Cliente: cliente3@box.demo / cliente123 (com solicitação de orçamento pendente)`);
   console.log(`  Mecânico: diego@box.demo / mecanico123`);
+  console.log(`  Admin: admin@box.demo / admin123`);
   console.log(`  Ordem de serviço: ${order.code} (id ${order.id})`);
   console.log(`  Aprovação pendente: ${approval.id}`);
   console.log(`  Solicitação de orçamento pendente: ${quoteRequest.id}`);

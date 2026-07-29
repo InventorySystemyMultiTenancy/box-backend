@@ -27,6 +27,22 @@ model User {
   quoteRequestsAsMechanic QuoteRequest[] @relation("QuoteRequestMechanic")
 }
 
+model InventoryPart {
+  id          String   @id @default(cuid())
+  name        String
+  sku         String?  @unique
+  description String?
+  unitCost    Float
+  stockQty    Int      @default(0)
+  photoUrl    String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  usages          ProblemPartUsage[]
+  financialEntries FinancialEntry[]
+}
+
 model Vehicle {
   id        String   @id @default(cuid())
   ownerId   String
@@ -64,6 +80,7 @@ model ServiceOrder {
   media          Media[]
   chatMessages   ChatMessage[]
   quoteRequest   QuoteRequest?
+  financialEntries FinancialEntry[]
 }
 
 // Pedido de orçamento feito pelo cliente antes de existir uma ordem de serviço.
@@ -76,6 +93,8 @@ model QuoteRequest {
   vehicleId          String
   vehicle            Vehicle   @relation(fields: [vehicleId], references: [id])
   problemDescription String
+  problemKey         String?
+  problemName        String?
   preferredDates     String
   status             String    @default("PENDING") // PENDING | ACCEPTED | DECLINED
   mechanicId         String?
@@ -135,13 +154,49 @@ model Approval {
   part           VehiclePart? @relation(fields: [partId], references: [id])
   title          String
   description    String
+  laborValue     Float?
+  partsValue     Float?
   estimatedValue Float?
   status         String       @default("PENDING") // PENDING | APPROVED | REJECTED
   responseNote   String?
+  stockAppliedAt DateTime?
   createdAt      DateTime     @default(now())
   respondedAt    DateTime?
 
-  media Media[]
+  media      Media[]
+  partUsages ProblemPartUsage[]
+  financialEntries FinancialEntry[]
+}
+
+model ProblemPartUsage {
+  id              String        @id @default(cuid())
+  approvalId      String
+  approval        Approval      @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+  inventoryPartId String
+  inventoryPart   InventoryPart @relation(fields: [inventoryPartId], references: [id])
+  quantity        Int
+  unitCostSnapshot Float
+  createdAt       DateTime      @default(now())
+
+  financialEntries FinancialEntry[]
+}
+
+model FinancialEntry {
+  id              String         @id @default(cuid())
+  type            String         // INCOME | EXPENSE
+  category        String
+  description     String
+  amount          Float
+  serviceOrderId  String?
+  serviceOrder    ServiceOrder?  @relation(fields: [serviceOrderId], references: [id])
+  approvalId      String?
+  approval        Approval?      @relation(fields: [approvalId], references: [id])
+  inventoryPartId String?
+  inventoryPart   InventoryPart? @relation(fields: [inventoryPartId], references: [id])
+  partUsageId     String?
+  partUsage       ProblemPartUsage? @relation(fields: [partUsageId], references: [id])
+  occurredAt      DateTime       @default(now())
+  createdAt       DateTime       @default(now())
 }
 
 model Media {

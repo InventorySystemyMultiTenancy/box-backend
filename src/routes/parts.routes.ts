@@ -55,7 +55,144 @@ const problemSchema = z.object({
   description: z.string().min(4),
   wearLevel: z.coerce.number().min(0).max(100).optional(),
   estimatedValue: z.coerce.number().min(0).optional(),
+  laborValue: z.coerce.number().min(0).optional(),
+  partUsages: z.string().optional(),
 });
+
+const usageSchema = z.array(z.object({
+  inventoryPartId: z.string(),
+  quantity: z.number().int().min(1),
+}));
+
+async function replacePartUsages(
+  approvalId: string,
+  rawUsages: string | undefined,
+  // Prisma transaction client.
+  tx: any
+) {
+  await tx.problemPartUsage.deleteMany({ where: { approvalId } });
+  if (!rawUsages) return 0;
+
+  const parsed = usageSchema.safeParse(JSON.parse(rawUsages));
+  if (!parsed.success) throw new Error("PART_USAGE_INVALID");
+
+  let partsValue = 0;
+  for (const usage of parsed.data) {
+    const inventoryPart = await tx.inventoryPart.findUnique({ where: { id: usage.inventoryPartId } });
+    if (!inventoryPart || !inventoryPart.active) throw new Error("PART_NOT_FOUND");
+    partsValue += inventoryPart.unitCost * usage.quantity;
+    await tx.problemPartUsage.create({
+      data: {
+        approvalId,
+        inventoryPartId: inventoryPart.id,
+        quantity: usage.quantity,
+        unitCostSnapshot: inventoryPart.unitCost,
+      },
+    });
+  }
+  return partsValue;
+}
+
+const priceProblemSchema = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().min(4).optional(),
+  laborValue: z.number().min(0).default(0),
+  partUsages: usageSchema.default([]),
+});
+
+partsRouter.patch(
+  "/problems/:approvalId/pricing",
+  requireAuth,
+  requireRole("ADMIN"),
+  async (req: AuthedRequest<{ orderId: string; approvalId: string }>, res) => {
+    const parsed = priceProblemSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+    const existing = await prisma.approval.findUnique({
+      where: { id: req.params.approvalId },
+      include: { part: true },
+    });
+    if (!existing || existing.serviceOrderId !== req.params.orderId || !existing.partId) {
+      return res.status(404).json({ error: "Problema não encontrado nesta ordem." });
+    }
+    if (existing.status !== "PENDING") {
+      return res.status(409).json({ error: "Só é possível precificar problemas pendentes." });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      if (parsed.data.name || parsed.data.description) {
+        await tx.vehiclePart.update({
+          where: { id: existing.partId! },
+          data: {
+            name: parsed.data.name,
+            note: parsed.data.description,
+          },
+        });
+      }
+
+      await tx.problemPartUsage.deleteMany({ where: { approvalId: existing.id } });
+      let partsValue = 0;
+      for (const usage of parsed.data.partUsages) {
+        const inventoryPart = await tx.inventoryPart.findUnique({ where: { id: usage.inventoryPartId } });
+        if (!inventoryPart || !inventoryPart.active) throw new Error("PART_NOT_FOUND");
+        partsValue += inventoryPart.unitCost * usage.quantity;
+        await tx.problemPartUsage.create({
+          data: {
+            approvalId: existing.id,
+            inventoryPartId: inventoryPart.id,
+            quantity: usage.quantity,
+            unitCostSnapshot: inventoryPart.unitCost,
+          },
+        });
+      }
+
+      const description = parsed.data.description ?? existing.description;
+      const approval = await tx.approval.update({
+        where: { id: existing.id },
+        data: {
+          title: "Novo problema identificado",
+          description: parsed.data.name ? `${parsed.data.name}: ${description}` : description,
+          laborValue: parsed.data.laborValue,
+          partsValue,
+          estimatedValue: parsed.data.laborValue + partsValue,
+        },
+        include: { media: true, partUsages: { include: { inventoryPart: true } } },
+      });
+
+      const part = await tx.vehiclePart.findUnique({
+        where: { id: existing.partId! },
+        include: { media: true, responsible: { select: { name: true } } },
+      });
+
+      const event = await tx.timelineEvent.create({
+        data: {
+          serviceOrderId: req.params.orderId,
+          title: "Problema precificado pelo admin",
+          description: `Valor total: R$ ${(parsed.data.laborValue + partsValue).toFixed(2)}`,
+          authorId: req.user!.id,
+        },
+        include: { media: true, author: { select: { name: true } } },
+      });
+
+      await tx.serviceOrder.update({
+        where: { id: req.params.orderId },
+        data: { status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL },
+      });
+
+      return { approval, part, event };
+    });
+
+    emitToOrder(req.params.orderId, "approval:update", { approval: result.approval });
+    if (result.part) emitToOrder(req.params.orderId, "part:update", { part: result.part });
+    emitToOrder(req.params.orderId, "timeline:new", { event: result.event });
+    emitToOrder(req.params.orderId, "status:update", {
+      orderId: req.params.orderId,
+      status: "AWAITING_APPROVAL",
+      progress: STATUS_PROGRESS.AWAITING_APPROVAL,
+    });
+    res.json(result);
+  }
+);
 
 partsRouter.post(
   "/problems",
@@ -71,7 +208,9 @@ partsRouter.post(
     if (!parsed.success) return res.status(400).json({ error: "Dados invÃ¡lidos.", details: parsed.error.flatten() });
 
     const files = Array.isArray(req.files) ? req.files : [];
-    const { key, name, description, wearLevel, estimatedValue } = parsed.data;
+    const { key, name, description, wearLevel } = parsed.data;
+    const isAdmin = req.user!.role === "ADMIN";
+    const laborValue = isAdmin ? parsed.data.laborValue ?? parsed.data.estimatedValue : undefined;
     const uploadedFiles = await Promise.all(
       files.map(async (file) => ({
         file,
@@ -106,10 +245,23 @@ partsRouter.post(
           partId: part.id,
           title: "Novo problema identificado",
           description: `${name}: ${description}`,
-          estimatedValue,
+          laborValue,
+          partsValue: 0,
+          estimatedValue: laborValue,
           status: "PENDING",
         },
       });
+
+      if (isAdmin && parsed.data.partUsages) {
+        const partsValue = await replacePartUsages(approval.id, parsed.data.partUsages, tx);
+        await tx.approval.update({
+          where: { id: approval.id },
+          data: {
+            partsValue,
+            estimatedValue: (laborValue ?? 0) + partsValue,
+          },
+        });
+      }
 
       const event = await tx.timelineEvent.create({
         data: {
@@ -136,7 +288,9 @@ partsRouter.post(
 
       await tx.serviceOrder.update({
         where: { id: orderId },
-        data: { status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL },
+        data: isAdmin
+          ? { status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL }
+          : { status: "DIAGNOSIS_DONE", progress: STATUS_PROGRESS.DIAGNOSIS_DONE },
       });
 
       const [partWithRelations, approvalWithMedia, eventWithRelations] = await Promise.all([
@@ -144,7 +298,7 @@ partsRouter.post(
           where: { id: part.id },
           include: { media: true, responsible: { select: { name: true } } },
         }),
-        tx.approval.findUnique({ where: { id: approval.id }, include: { media: true } }),
+        tx.approval.findUnique({ where: { id: approval.id }, include: { media: true, partUsages: { include: { inventoryPart: true } } } }),
         tx.timelineEvent.findUnique({
           where: { id: event.id },
           include: { media: true, author: { select: { name: true } } },
@@ -157,7 +311,11 @@ partsRouter.post(
     emitToOrder(orderId, "part:update", { part: result.part });
     emitToOrder(orderId, "approval:new", { approval: result.approval });
     emitToOrder(orderId, "timeline:new", { event: result.event });
-    emitToOrder(orderId, "status:update", { orderId, status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL });
+    emitToOrder(orderId, "status:update", {
+      orderId,
+      status: isAdmin ? "AWAITING_APPROVAL" : "DIAGNOSIS_DONE",
+      progress: isAdmin ? STATUS_PROGRESS.AWAITING_APPROVAL : STATUS_PROGRESS.DIAGNOSIS_DONE,
+    });
 
     res.status(201).json(result);
   }

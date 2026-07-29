@@ -16,7 +16,10 @@ const orderInclude = {
     include: { media: true, author: { select: { name: true } } },
   },
   parts: { include: { media: true, responsible: { select: { name: true } } } },
-  approvals: { orderBy: { createdAt: "desc" as const }, include: { media: true } },
+  approvals: {
+    orderBy: { createdAt: "desc" as const },
+    include: { media: true, partUsages: { include: { inventoryPart: true } } },
+  },
   media: { orderBy: { createdAt: "desc" as const } },
 };
 
@@ -83,6 +86,9 @@ serviceOrdersRouter.patch(
     if (!parsed.success) return res.status(400).json({ error: "Status inválido.", details: parsed.error.flatten() });
 
     const { status, progress } = parsed.data;
+    if (status === "READY_FOR_PICKUP" && req.user!.role !== "ADMIN") {
+      return res.status(403).json({ error: "Apenas o admin pode finalizar projetos." });
+    }
 
     if (status === "READY_FOR_PICKUP") {
       const unresolvedParts = await prisma.vehiclePart.count({
@@ -96,13 +102,38 @@ serviceOrdersRouter.patch(
       }
     }
 
-    const order = await prisma.serviceOrder.update({
-      where: { id: req.params.id },
-      data: {
-        status,
-        progress: progress ?? STATUS_PROGRESS[status],
-        completedAt: status === "READY_FOR_PICKUP" ? new Date() : undefined,
-      },
+    const order = await prisma.$transaction(async (tx) => {
+      const order = await tx.serviceOrder.update({
+        where: { id: req.params.id },
+        data: {
+          status,
+          progress: progress ?? STATUS_PROGRESS[status],
+          completedAt: status === "READY_FOR_PICKUP" ? new Date() : undefined,
+        },
+      });
+
+      if (status === "READY_FOR_PICKUP") {
+        const existingIncome = await tx.financialEntry.findFirst({
+          where: { serviceOrderId: order.id, type: "INCOME", category: "PROJETO" },
+        });
+        if (!existingIncome) {
+          const approvals = await tx.approval.findMany({
+            where: { serviceOrderId: order.id, status: "APPROVED" },
+          });
+          const total = approvals.reduce((sum, approval) => sum + (approval.estimatedValue ?? 0), 0) || order.estimatedMin || 0;
+          await tx.financialEntry.create({
+            data: {
+              type: "INCOME",
+              category: "PROJETO",
+              description: `Entrada do projeto ${order.code}`,
+              amount: total,
+              serviceOrderId: order.id,
+            },
+          });
+        }
+      }
+
+      return order;
     });
 
     emitToOrder(order.id, "status:update", { orderId: order.id, status: order.status, progress: order.progress });

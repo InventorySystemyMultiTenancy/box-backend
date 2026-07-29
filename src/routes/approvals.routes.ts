@@ -15,7 +15,7 @@ approvalsRouter.get("/", requireAuth, async (req: AuthedRequest<{ orderId: strin
 
   const approvals = await prisma.approval.findMany({
     where: { serviceOrderId: orderId },
-    include: { media: true },
+    include: { media: true, partUsages: { include: { inventoryPart: true } } },
     orderBy: { createdAt: "desc" },
   });
   res.json({ approvals });
@@ -63,8 +63,17 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
   }
 
   const isApproved = parsed.data.status === "APPROVED";
+  const beforeApproval = await prisma.approval.findUnique({ where: { id: req.params.approvalId } });
+  if (!beforeApproval || beforeApproval.serviceOrderId !== orderId) {
+    return res.status(404).json({ error: "Aprovação não encontrada." });
+  }
+  if (isApproved && beforeApproval.estimatedValue == null) {
+    return res.status(409).json({ error: "Este problema ainda precisa ser precificado pelo admin." });
+  }
 
-  const { approval, event, part } = await prisma.$transaction(async (tx) => {
+  let result;
+  try {
+    result = await prisma.$transaction(async (tx) => {
     const approval = await tx.approval.update({
       where: { id: req.params.approvalId },
       data: {
@@ -72,8 +81,36 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
         responseNote: parsed.data.status === "REJECTED" ? parsed.data.responseNote : null,
         respondedAt: new Date(),
       },
-      include: { media: true },
+      include: { media: true, partUsages: { include: { inventoryPart: true } } },
     });
+
+    if (isApproved && approval.stockAppliedAt == null && approval.partUsages.length > 0) {
+      for (const usage of approval.partUsages) {
+        if (usage.inventoryPart.stockQty < usage.quantity) {
+          throw new Error("INSUFFICIENT_STOCK");
+        }
+        await tx.inventoryPart.update({
+          where: { id: usage.inventoryPartId },
+          data: { stockQty: { decrement: usage.quantity } },
+        });
+        await tx.financialEntry.create({
+          data: {
+            type: "EXPENSE",
+            category: "PEÇA",
+            description: `${usage.quantity}x ${usage.inventoryPart.name} usado em problema aprovado`,
+            amount: usage.unitCostSnapshot * usage.quantity,
+            serviceOrderId: orderId,
+            approvalId: approval.id,
+            inventoryPartId: usage.inventoryPartId,
+            partUsageId: usage.id,
+          },
+        });
+      }
+      await tx.approval.update({
+        where: { id: approval.id },
+        data: { stockAppliedAt: new Date() },
+      });
+    }
 
     const event = await tx.timelineEvent.create({
       data: {
@@ -100,8 +137,16 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
       });
     }
 
-    return { approval, event, part };
-  });
+      return { approval, event, part };
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === "INSUFFICIENT_STOCK") {
+      return res.status(409).json({ error: "Estoque insuficiente para aprovar este problema." });
+    }
+    throw err;
+  }
+
+  const { approval, event, part } = result;
 
   emitToOrder(orderId, "approval:update", { approval });
   emitToOrder(orderId, "timeline:new", { event });

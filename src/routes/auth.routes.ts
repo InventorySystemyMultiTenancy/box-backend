@@ -34,10 +34,18 @@ authRouter.post("/register", async (req, res) => {
 });
 
 const staffCreateUserSchema = registerSchema.extend({
-  role: z.enum(["CUSTOMER", "MECHANIC"]),
+  role: z.enum(["CUSTOMER", "MECHANIC", "ADMIN"]),
 });
 
-authRouter.post("/users", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req, res) => {
+authRouter.get("/users", requireAuth, requireRole("ADMIN"), async (_req, res) => {
+  const users = await prisma.user.findMany({
+    select: { id: true, name: true, email: true, role: true, phone: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({ users });
+});
+
+authRouter.post("/users", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parsed = staffCreateUserSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Dados invÃ¡lidos.", details: parsed.error.flatten() });
@@ -53,6 +61,33 @@ authRouter.post("/users", requireAuth, requireRole("MECHANIC", "ADMIN"), async (
   });
 
   res.status(201).json({ user: toPublicUser(user) });
+});
+
+const updateUserSchema = z.object({
+  name: z.string().min(2).optional(),
+  email: z.string().email().optional(),
+  phone: z.string().nullable().optional(),
+  role: z.enum(["CUSTOMER", "MECHANIC", "ADMIN"]).optional(),
+  password: z.string().min(6).optional(),
+});
+
+authRouter.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = updateUserSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+  const passwordHash = parsed.data.password ? await bcrypt.hash(parsed.data.password, 10) : undefined;
+  const user = await prisma.user.update({
+    where: { id: req.params.id },
+    data: {
+      name: parsed.data.name,
+      email: parsed.data.email,
+      phone: parsed.data.phone,
+      role: parsed.data.role,
+      ...(passwordHash ? { passwordHash } : {}),
+    },
+  });
+
+  res.json({ user: toPublicUser(user) });
 });
 
 const loginSchema = z.object({

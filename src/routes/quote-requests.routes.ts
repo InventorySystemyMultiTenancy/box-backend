@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { emitToStaff, emitToUser } from "@/sockets";
-import { STATUS_PROGRESS } from "@/lib/constants";
+import { PART_KEYS, STATUS_PROGRESS } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
 
 export const quoteRequestsRouter = Router();
@@ -14,6 +14,49 @@ const quoteRequestInclude = {
   vehicle: true,
   serviceOrder: { select: { id: true, code: true, status: true } },
 };
+
+const PART_LABELS: Record<(typeof PART_KEYS)[number], string> = {
+  motor: "Motor",
+  freios: "Freios",
+  suspensao: "Suspensão",
+  transmissao: "Transmissão",
+  escapamento: "Escapamento",
+  eletrica: "Elétrica",
+  arcondicionado: "Ar-condicionado",
+  direcao: "Direção",
+  pneus: "Pneus",
+  bateria: "Bateria",
+  arrefecimento: "Arrefecimento",
+  combustivel: "Combustível",
+  carroceria: "Carroceria",
+};
+
+function inferProblemKey(text: string): (typeof PART_KEYS)[number] {
+  const normalized = text
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+
+  if (/freio|pastilha|disco|abs|pedal/.test(normalized)) return "freios";
+  if (/suspens|amortec|mola|batida|barulho.*roda|estalo/.test(normalized)) return "suspensao";
+  if (/cambio|transmiss|embreagem|marcha/.test(normalized)) return "transmissao";
+  if (/escap|catalis|silencioso|fumaca/.test(normalized)) return "escapamento";
+  if (/eletric|luz|farol|lanterna|painel|alternador/.test(normalized)) return "eletrica";
+  if (/ar.?cond|climat|ventila|compressor/.test(normalized)) return "arcondicionado";
+  if (/direcao|volante|alinhamento/.test(normalized)) return "direcao";
+  if (/pneu|roda|calibr|vibracao/.test(normalized)) return "pneus";
+  if (/bateria|partida|arranque/.test(normalized)) return "bateria";
+  if (/radiador|arrefec|agua|temperatura|superaque/.test(normalized)) return "arrefecimento";
+  if (/combust|injecao|bomba|tanque/.test(normalized)) return "combustivel";
+  if (/porta|vidro|lataria|parachoque|capo|carroceria/.test(normalized)) return "carroceria";
+  return "motor";
+}
+
+function safeProblemKey(value: string | null | undefined, fallbackText: string): (typeof PART_KEYS)[number] {
+  return PART_KEYS.includes(value as (typeof PART_KEYS)[number])
+    ? (value as (typeof PART_KEYS)[number])
+    : inferProblemKey(fallbackText);
+}
 
 quoteRequestsRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const isStaff = req.user!.role === "MECHANIC" || req.user!.role === "ADMIN";
@@ -39,6 +82,8 @@ const createSchema = z.object({
     plate: z.string().optional(),
     mileage: z.number().int().min(0).default(0),
   }),
+  problemKey: z.enum(PART_KEYS).optional(),
+  problemName: z.string().min(1).optional(),
   problemDescription: z.string().min(4),
   preferredDates: z.string().min(1),
 });
@@ -65,10 +110,15 @@ quoteRequestsRouter.post("/", requireAuth, requireRole("CUSTOMER"), async (req: 
   }
 
   const { vehicle, problemDescription, preferredDates } = parsed.data;
+  const problemKey = parsed.data.problemKey ?? inferProblemKey(`${parsed.data.problemName ?? ""} ${problemDescription}`);
+  const problemName = parsed.data.problemName ?? PART_LABELS[problemKey];
+
   const request = await prisma.quoteRequest.create({
     data: {
       customer: { connect: { id: req.user!.id } },
       problemDescription,
+      problemKey,
+      problemName,
       preferredDates,
       vehicle: { create: { ...vehicle, owner: { connect: { id: req.user!.id } } } },
     },
@@ -99,6 +149,8 @@ quoteRequestsRouter.patch(
     const mechanic = await prisma.user.findUnique({ where: { id: req.user!.id } });
     const { scheduledAt, initialValue } = parsed.data;
     const scheduledDate = new Date(scheduledAt);
+    const problemKey = safeProblemKey(existing.problemKey, `${existing.problemName ?? ""} ${existing.problemDescription}`);
+    const problemName = existing.problemName ?? PART_LABELS[problemKey];
 
     const { request, order } = await prisma.$transaction(async (tx) => {
       const code = await nextOrderCode();
@@ -113,8 +165,17 @@ quoteRequestsRouter.patch(
           timelineEvents: {
             create: {
               title: `Orçamento aceito por ${mechanic?.name ?? "a oficina"}`,
-              description: `Agendado para ${scheduledDate.toLocaleString("pt-BR")}`,
+              description: `Agendado para ${scheduledDate.toLocaleString("pt-BR")}. Problema relatado: ${existing.problemDescription}`,
               authorId: req.user!.id,
+            },
+          },
+          parts: {
+            create: {
+              key: problemKey,
+              name: problemName,
+              status: "CRITICAL",
+              note: `Relatado pelo cliente na solicitação de orçamento: ${existing.problemDescription}`,
+              responsibleId: req.user!.id,
             },
           },
         },
