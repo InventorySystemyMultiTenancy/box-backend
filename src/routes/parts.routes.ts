@@ -323,6 +323,54 @@ partsRouter.post(
 
 // O mecânico marca um problema (já aprovado e em reparo) como resolvido.
 partsRouter.post(
+  "/:partId/start",
+  requireAuth,
+  requireRole("MECHANIC", "ADMIN"),
+  async (req: AuthedRequest<{ orderId: string; partId: string }>, res) => {
+    const { orderId, partId } = req.params;
+
+    const existing = await prisma.vehiclePart.findUnique({ where: { id: partId } });
+    if (!existing || existing.serviceOrderId !== orderId) {
+      return res.status(404).json({ error: "Componente nao encontrado nesta ordem de servico." });
+    }
+
+    const approval = await prisma.approval.findFirst({
+      where: { serviceOrderId: orderId, partId },
+      orderBy: { createdAt: "desc" },
+    });
+    if (approval && approval.status !== "APPROVED") {
+      return res.status(409).json({ error: "Este problema precisa ser aprovado pelo cliente antes de iniciar a manutencao." });
+    }
+
+    const [part, event, order] = await prisma.$transaction([
+      prisma.vehiclePart.update({
+        where: { id: partId },
+        data: { status: "IN_PROGRESS", responsibleId: req.user!.id },
+        include: { media: true, responsible: { select: { name: true } } },
+      }),
+      prisma.timelineEvent.create({
+        data: {
+          serviceOrderId: orderId,
+          title: `Manutencao iniciada: ${existing.name}`,
+          description: "Reparo em andamento.",
+          authorId: req.user!.id,
+        },
+        include: { media: true, author: { select: { name: true } } },
+      }),
+      prisma.serviceOrder.update({
+        where: { id: orderId },
+        data: { status: "IN_PROGRESS", progress: STATUS_PROGRESS.IN_PROGRESS },
+      }),
+    ]);
+
+    emitToOrder(orderId, "part:update", { part });
+    emitToOrder(orderId, "timeline:new", { event });
+    emitToOrder(orderId, "status:update", { orderId, status: order.status, progress: order.progress });
+    res.json({ part, event, order });
+  }
+);
+
+partsRouter.post(
   "/:partId/resolve",
   requireAuth,
   requireRole("MECHANIC", "ADMIN"),

@@ -4,7 +4,6 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
-import { STATUS_PROGRESS } from "@/lib/constants";
 
 export const approvalsRouter = Router({ mergeParams: true });
 
@@ -125,15 +124,11 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
 
     // Aprovado: a peça entra em reparo e a ordem volta para "reparação em andamento".
     let part = null;
-    if (isApproved && approval.partId) {
+    if (!isApproved && approval.partId) {
       part = await tx.vehiclePart.update({
         where: { id: approval.partId },
-        data: { status: "IN_PROGRESS" },
+        data: { status: "WARNING" },
         include: { media: true, responsible: { select: { name: true } } },
-      });
-      await tx.serviceOrder.update({
-        where: { id: orderId },
-        data: { status: "IN_PROGRESS", progress: STATUS_PROGRESS.IN_PROGRESS },
       });
     }
 
@@ -152,7 +147,6 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
   emitToOrder(orderId, "timeline:new", { event });
   if (part) {
     emitToOrder(orderId, "part:update", { part });
-    emitToOrder(orderId, "status:update", { orderId, status: "IN_PROGRESS", progress: STATUS_PROGRESS.IN_PROGRESS });
   }
   res.json({ approval });
 });
