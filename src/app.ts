@@ -9,6 +9,7 @@ import { partsRouter } from "@/routes/parts.routes";
 import { approvalsRouter } from "@/routes/approvals.routes";
 import { chatRouter } from "@/routes/chat.routes";
 import { uploadsRouter } from "@/routes/uploads.routes";
+import { quoteRequestsRouter } from "@/routes/quote-requests.routes";
 
 export const app = express();
 
@@ -26,5 +27,6 @@ app.use("/api/service-orders/:orderId/parts", partsRouter);
 app.use("/api/service-orders/:orderId/approvals", approvalsRouter);
 app.use("/api/service-orders/:orderId/chat", chatRouter);
 app.use("/api/uploads", uploadsRouter);
+app.use("/api/quote-requests", quoteRequestsRouter);
 
 app.use((_req, res) => res.status(404).json({ error: "Rota não encontrada." }));

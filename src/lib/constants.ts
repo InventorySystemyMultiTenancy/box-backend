@@ -2,6 +2,7 @@
 // na especificação de experiência — mudar aqui exige espelhar no frontend.
 
 export const SERVICE_ORDER_STATUSES = [
+  "SCHEDULED",
   "RECEIVED",
   "AWAITING_DIAGNOSIS",
   "DIAGNOSIS_DONE",
@@ -20,6 +21,7 @@ export type ServiceOrderStatus = (typeof SERVICE_ORDER_STATUSES)[number];
 // Progresso sugerido (%) por status, usado como fallback quando nenhum
 // valor manual é informado ao mudar de estado.
 export const STATUS_PROGRESS: Record<ServiceOrderStatus, number> = {
+  SCHEDULED: 2,
   RECEIVED: 5,
   AWAITING_DIAGNOSIS: 15,
   DIAGNOSIS_DONE: 25,
@@ -63,3 +65,6 @@ export const APPROVAL_STATUSES = ["PENDING", "APPROVED", "REJECTED"] as const;
 export const MEDIA_TYPES = ["PHOTO", "VIDEO", "AUDIO", "DOCUMENT"] as const;
 export const USER_ROLES = ["CUSTOMER", "MECHANIC", "ADMIN"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
+
+export const QUOTE_REQUEST_STATUSES = ["PENDING", "ACCEPTED", "DECLINED"] as const;
+export type QuoteRequestStatus = (typeof QUOTE_REQUEST_STATUSES)[number];

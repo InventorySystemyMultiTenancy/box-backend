@@ -20,9 +20,11 @@ model User {
   phone        String?
   createdAt    DateTime @default(now())
 
-  vehicles       Vehicle[]
-  timelineEvents TimelineEvent[] @relation("EventAuthor")
-  vehicleParts   VehiclePart[]   @relation("PartResponsible")
+  vehicles              Vehicle[]
+  timelineEvents        TimelineEvent[] @relation("EventAuthor")
+  vehicleParts          VehiclePart[]   @relation("PartResponsible")
+  quoteRequestsAsCustomer QuoteRequest[] @relation("QuoteRequestCustomer")
+  quoteRequestsAsMechanic QuoteRequest[] @relation("QuoteRequestMechanic")
 }
 
 model Vehicle {
@@ -38,6 +40,7 @@ model Vehicle {
   createdAt DateTime @default(now())
 
   serviceOrders ServiceOrder[]
+  quoteRequests QuoteRequest[]
 }
 
 model ServiceOrder {
@@ -60,6 +63,30 @@ model ServiceOrder {
   approvals      Approval[]
   media          Media[]
   chatMessages   ChatMessage[]
+  quoteRequest   QuoteRequest?
+}
+
+// Pedido de orçamento feito pelo cliente antes de existir uma ordem de serviço.
+// Ao ser aceito pelo mecânico, dá origem a um ServiceOrder com status "SCHEDULED"
+// (agendado, aguardando o cliente levar o veículo).
+model QuoteRequest {
+  id                 String    @id @default(cuid())
+  customerId         String
+  customer           User      @relation("QuoteRequestCustomer", fields: [customerId], references: [id])
+  vehicleId          String
+  vehicle            Vehicle   @relation(fields: [vehicleId], references: [id])
+  problemDescription String
+  preferredDates     String
+  status             String    @default("PENDING") // PENDING | ACCEPTED | DECLINED
+  mechanicId         String?
+  mechanic           User?     @relation("QuoteRequestMechanic", fields: [mechanicId], references: [id])
+  scheduledAt        DateTime?
+  initialValue       Float?
+  declineReason      String?
+  serviceOrderId     String?   @unique
+  serviceOrder       ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
+  createdAt          DateTime  @default(now())
+  respondedAt        DateTime?
 }
 
 model TimelineEvent {

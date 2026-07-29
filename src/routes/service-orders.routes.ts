@@ -5,6 +5,7 @@ import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
 import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS } from "@/lib/constants";
+import { nextOrderCode } from "@/lib/order-code";
 
 export const serviceOrdersRouter = Router();
 
@@ -95,10 +96,3 @@ serviceOrdersRouter.patch(
     res.json({ order });
   }
 );
-
-async function nextOrderCode() {
-  const year = new Date().getFullYear();
-  const count = await prisma.serviceOrder.count();
-  const seq = String(count + 1000 + 1).padStart(5, "0");
-  return `OS-${year}-${seq}`;
-}

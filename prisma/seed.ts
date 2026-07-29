@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 // nascer demonstrável, sem tela vazia.
 async function main() {
   console.log("Seed: limpando dados existentes...");
+  await prisma.quoteRequest.deleteMany();
   await prisma.chatMessage.deleteMany();
   await prisma.media.deleteMany();
   await prisma.approval.deleteMany();
@@ -34,6 +35,28 @@ async function main() {
       email: "diego@box.demo",
       passwordHash: mechanicPassword,
       role: "MECHANIC",
+    },
+  });
+
+  // Cliente sem nenhuma ordem em andamento — demonstra o fluxo de "solicitar orçamento".
+  const customerNoOrder = await prisma.user.create({
+    data: {
+      name: "Fernanda R.",
+      email: "cliente2@box.demo",
+      passwordHash: customerPassword,
+      role: "CUSTOMER",
+      phone: "+55 11 90000-0001",
+    },
+  });
+
+  // Cliente com uma solicitação de orçamento pendente — demonstra a fila do mecânico.
+  const customerWithRequest = await prisma.user.create({
+    data: {
+      name: "Carlos E.",
+      email: "cliente3@box.demo",
+      passwordHash: customerPassword,
+      role: "CUSTOMER",
+      phone: "+55 11 90000-0002",
     },
   });
 
@@ -146,11 +169,33 @@ async function main() {
     },
   });
 
+  const quoteRequest = await prisma.quoteRequest.create({
+    data: {
+      customer: { connect: { id: customerWithRequest.id } },
+      problemDescription: "Suspensão fazendo barulho ao passar em buracos e lombadas, principalmente do lado direito.",
+      preferredDates: "Segunda ou quarta-feira pela manhã",
+      vehicle: {
+        create: {
+          owner: { connect: { id: customerWithRequest.id } },
+          brand: "Hyundai",
+          model: "HB20",
+          year: 2019,
+          engine: "1.0",
+          plate: "XYZ-9F88",
+          mileage: 71500,
+        },
+      },
+    },
+  });
+
   console.log("Seed concluído:");
-  console.log(`  Cliente: cliente@box.demo / cliente123`);
+  console.log(`  Cliente: cliente@box.demo / cliente123 (com ordem em andamento)`);
+  console.log(`  Cliente: cliente2@box.demo / cliente123 (sem ordens — testa "solicitar orçamento")`);
+  console.log(`  Cliente: cliente3@box.demo / cliente123 (com solicitação de orçamento pendente)`);
   console.log(`  Mecânico: diego@box.demo / mecanico123`);
   console.log(`  Ordem de serviço: ${order.code} (id ${order.id})`);
   console.log(`  Aprovação pendente: ${approval.id}`);
+  console.log(`  Solicitação de orçamento pendente: ${quoteRequest.id}`);
 }
 
 function atToday(hour: number, minute: number) {
