@@ -43,7 +43,6 @@ approvalsRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (
   res.status(201).json({ approval });
 });
 
-// A resposta é sempre do cliente dono do veículo — mecânico/admin nunca aprovam em nome dele.
 approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ orderId: string; approvalId: string }>, res) => {
   const orderId = req.params.orderId;
   const allowed = await canAccessServiceOrder(req.user!.id, req.user!.role, orderId);
@@ -52,23 +51,38 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
     return res.status(403).json({ error: "Apenas o cliente pode aprovar ou reprovar." });
   }
 
-  const bodySchema = z.object({ status: z.enum(["APPROVED", "REJECTED"]) });
+  const bodySchema = z.object({
+    status: z.enum(["APPROVED", "REJECTED"]),
+    responseNote: z.string().trim().optional(),
+  });
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Status inválido." });
+  if (parsed.data.status === "REJECTED" && !parsed.data.responseNote) {
+    return res.status(400).json({ error: "Informe o motivo da reprovação." });
+  }
 
   const approval = await prisma.approval.update({
     where: { id: req.params.approvalId },
-    data: { status: parsed.data.status, respondedAt: new Date() },
+    data: {
+      status: parsed.data.status,
+      responseNote: parsed.data.status === "REJECTED" ? parsed.data.responseNote : null,
+      respondedAt: new Date(),
+    },
+    include: { media: true },
   });
 
-  await prisma.timelineEvent.create({
+  const event = await prisma.timelineEvent.create({
     data: {
       serviceOrderId: orderId,
       title: parsed.data.status === "APPROVED" ? "Cliente aprovou orçamento adicional" : "Cliente reprovou orçamento adicional",
+      description: parsed.data.status === "REJECTED" ? parsed.data.responseNote : undefined,
       done: true,
+      authorId: req.user!.id,
     },
+    include: { media: true, author: { select: { name: true } } },
   });
 
   emitToOrder(orderId, "approval:update", { approval });
+  emitToOrder(orderId, "timeline:new", { event });
   res.json({ approval });
 });

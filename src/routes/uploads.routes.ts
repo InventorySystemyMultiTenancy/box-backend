@@ -2,7 +2,7 @@ import { Router } from "express";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
-import { upload, guessMediaType } from "@/middleware/upload";
+import { upload, guessMediaType, persistUploadedFile } from "@/middleware/upload";
 import { emitToOrder } from "@/sockets";
 
 export const uploadsRouter = Router();
@@ -17,13 +17,15 @@ uploadsRouter.post("/", requireAuth, upload.single("file"), async (req: AuthedRe
   const allowed = await canAccessServiceOrder(req.user!.id, req.user!.role, serviceOrderId);
   if (!allowed) return res.status(403).json({ error: "Sem acesso a esta ordem de serviço." });
 
+  const url = await persistUploadedFile(req.file);
+
   const media = await prisma.media.create({
     data: {
       serviceOrderId,
       partId: partId || undefined,
       timelineEventId: timelineEventId || undefined,
       approvalId: approvalId || undefined,
-      url: `/uploads/${req.file.filename}`,
+      url,
       type: guessMediaType(req.file.mimetype),
       label,
     },

@@ -10,9 +10,12 @@ export const serviceOrdersRouter = Router();
 
 const orderInclude = {
   vehicle: { include: { owner: { select: { id: true, name: true, email: true } } } },
-  timelineEvents: { orderBy: { occurredAt: "asc" as const } },
-  parts: true,
-  approvals: { orderBy: { createdAt: "desc" as const } },
+  timelineEvents: {
+    orderBy: { occurredAt: "asc" as const },
+    include: { media: true, author: { select: { name: true } } },
+  },
+  parts: { include: { media: true, responsible: { select: { name: true } } } },
+  approvals: { orderBy: { createdAt: "desc" as const }, include: { media: true } },
   media: { orderBy: { createdAt: "desc" as const } },
 };
 

@@ -105,6 +105,7 @@ model Approval {
   description    String
   estimatedValue Float?
   status         String       @default("PENDING") // PENDING | APPROVED | REJECTED
+  responseNote   String?
   createdAt      DateTime     @default(now())
   respondedAt    DateTime?
 

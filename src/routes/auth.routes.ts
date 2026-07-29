@@ -3,8 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { signToken } from "@/lib/jwt";
-import { requireAuth, AuthedRequest } from "@/middleware/auth";
-import { USER_ROLES } from "@/lib/constants";
+import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 
 export const authRouter = Router();
 
@@ -12,7 +11,6 @@ const registerSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   password: z.string().min(6),
-  role: z.enum(USER_ROLES).optional(),
   phone: z.string().optional(),
 });
 
@@ -21,18 +19,40 @@ authRouter.post("/register", async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
   }
-  const { name, email, password, role, phone } = parsed.data;
+  const { name, email, password, phone } = parsed.data;
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) return res.status(409).json({ error: "Este e-mail já está cadastrado." });
 
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { name, email, passwordHash, role: role ?? "CUSTOMER", phone },
+    data: { name, email, passwordHash, role: "CUSTOMER", phone },
   });
 
   const token = signToken({ sub: user.id, role: user.role });
   res.status(201).json({ token, user: toPublicUser(user) });
+});
+
+const staffCreateUserSchema = registerSchema.extend({
+  role: z.enum(["CUSTOMER", "MECHANIC"]),
+});
+
+authRouter.post("/users", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req, res) => {
+  const parsed = staffCreateUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Dados invÃ¡lidos.", details: parsed.error.flatten() });
+  }
+  const { name, email, password, role, phone } = parsed.data;
+
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) return res.status(409).json({ error: "Este e-mail jÃ¡ estÃ¡ cadastrado." });
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const user = await prisma.user.create({
+    data: { name, email, passwordHash, role, phone },
+  });
+
+  res.status(201).json({ user: toPublicUser(user) });
 });
 
 const loginSchema = z.object({

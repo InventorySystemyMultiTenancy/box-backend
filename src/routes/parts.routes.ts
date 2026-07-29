@@ -4,7 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
-import { PART_KEYS, PART_STATUSES } from "@/lib/constants";
+import { upload, guessMediaType, persistUploadedFile } from "@/middleware/upload";
+import { PART_KEYS, PART_STATUSES, STATUS_PROGRESS } from "@/lib/constants";
 
 export const partsRouter = Router({ mergeParams: true });
 
@@ -47,3 +48,116 @@ partsRouter.put("/:key", requireAuth, requireRole("MECHANIC", "ADMIN"), async (r
   emitToOrder(orderId, "part:update", { part });
   res.json({ part });
 });
+
+const problemSchema = z.object({
+  key: z.enum(PART_KEYS),
+  name: z.string().min(1),
+  description: z.string().min(4),
+  wearLevel: z.coerce.number().min(0).max(100).optional(),
+  estimatedValue: z.coerce.number().min(0).optional(),
+});
+
+partsRouter.post(
+  "/problems",
+  requireAuth,
+  requireRole("MECHANIC", "ADMIN"),
+  upload.array("files", 12),
+  async (req: AuthedRequest<{ orderId: string }>, res) => {
+    const orderId = req.params.orderId;
+    const allowed = await canAccessServiceOrder(req.user!.id, req.user!.role, orderId);
+    if (!allowed) return res.status(403).json({ error: "Sem acesso a esta ordem de serviÃ§o." });
+
+    const parsed = problemSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Dados invÃ¡lidos.", details: parsed.error.flatten() });
+
+    const files = Array.isArray(req.files) ? req.files : [];
+    const { key, name, description, wearLevel, estimatedValue } = parsed.data;
+    const uploadedFiles = await Promise.all(
+      files.map(async (file) => ({
+        file,
+        url: await persistUploadedFile(file),
+      }))
+    );
+
+    const result = await prisma.$transaction(async (tx) => {
+      const part = await tx.vehiclePart.upsert({
+        where: { serviceOrderId_key: { serviceOrderId: orderId, key } },
+        create: {
+          serviceOrderId: orderId,
+          key,
+          name,
+          status: "CRITICAL",
+          note: description,
+          wearLevel,
+          responsibleId: req.user!.id,
+        },
+        update: {
+          name,
+          status: "CRITICAL",
+          note: description,
+          wearLevel,
+          responsibleId: req.user!.id,
+        },
+      });
+
+      const approval = await tx.approval.create({
+        data: {
+          serviceOrderId: orderId,
+          title: "Novo problema identificado",
+          description: `${name}: ${description}`,
+          estimatedValue,
+          status: "PENDING",
+        },
+      });
+
+      const event = await tx.timelineEvent.create({
+        data: {
+          serviceOrderId: orderId,
+          title: "Novo problema identificado",
+          description: `${name}: ${description}`,
+          authorId: req.user!.id,
+        },
+      });
+
+      if (uploadedFiles.length > 0) {
+        await tx.media.createMany({
+          data: uploadedFiles.map(({ file, url }) => ({
+            serviceOrderId: orderId,
+            partId: part.id,
+            approvalId: approval.id,
+            timelineEventId: event.id,
+            url,
+            type: guessMediaType(file.mimetype),
+            label: file.originalname,
+          })),
+        });
+      }
+
+      await tx.serviceOrder.update({
+        where: { id: orderId },
+        data: { status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL },
+      });
+
+      const [partWithRelations, approvalWithMedia, eventWithRelations] = await Promise.all([
+        tx.vehiclePart.findUnique({
+          where: { id: part.id },
+          include: { media: true, responsible: { select: { name: true } } },
+        }),
+        tx.approval.findUnique({ where: { id: approval.id }, include: { media: true } }),
+        tx.timelineEvent.findUnique({
+          where: { id: event.id },
+          include: { media: true, author: { select: { name: true } } },
+        }),
+      ]);
+
+      return { part: partWithRelations!, approval: approvalWithMedia!, event: eventWithRelations! };
+    });
+
+    emitToOrder(orderId, "part:update", { part: result.part });
+    emitToOrder(orderId, "approval:new", { approval: result.approval });
+    emitToOrder(orderId, "timeline:new", { event: result.event });
+    emitToOrder(orderId, "status:update", { orderId, status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL });
+
+    res.status(201).json(result);
+  }
+);
