@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
+import { STATUS_PROGRESS } from "@/lib/constants";
 
 export const approvalsRouter = Router({ mergeParams: true });
 
@@ -61,28 +62,52 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
     return res.status(400).json({ error: "Informe o motivo da reprovação." });
   }
 
-  const approval = await prisma.approval.update({
-    where: { id: req.params.approvalId },
-    data: {
-      status: parsed.data.status,
-      responseNote: parsed.data.status === "REJECTED" ? parsed.data.responseNote : null,
-      respondedAt: new Date(),
-    },
-    include: { media: true },
-  });
+  const isApproved = parsed.data.status === "APPROVED";
 
-  const event = await prisma.timelineEvent.create({
-    data: {
-      serviceOrderId: orderId,
-      title: parsed.data.status === "APPROVED" ? "Cliente aprovou orçamento adicional" : "Cliente reprovou orçamento adicional",
-      description: parsed.data.status === "REJECTED" ? parsed.data.responseNote : undefined,
-      done: true,
-      authorId: req.user!.id,
-    },
-    include: { media: true, author: { select: { name: true } } },
+  const { approval, event, part } = await prisma.$transaction(async (tx) => {
+    const approval = await tx.approval.update({
+      where: { id: req.params.approvalId },
+      data: {
+        status: parsed.data.status,
+        responseNote: parsed.data.status === "REJECTED" ? parsed.data.responseNote : null,
+        respondedAt: new Date(),
+      },
+      include: { media: true },
+    });
+
+    const event = await tx.timelineEvent.create({
+      data: {
+        serviceOrderId: orderId,
+        title: isApproved ? "Cliente aprovou orçamento adicional" : "Cliente reprovou orçamento adicional",
+        description: parsed.data.status === "REJECTED" ? parsed.data.responseNote : undefined,
+        done: true,
+        authorId: req.user!.id,
+      },
+      include: { media: true, author: { select: { name: true } } },
+    });
+
+    // Aprovado: a peça entra em reparo e a ordem volta para "reparação em andamento".
+    let part = null;
+    if (isApproved && approval.partId) {
+      part = await tx.vehiclePart.update({
+        where: { id: approval.partId },
+        data: { status: "IN_PROGRESS" },
+        include: { media: true, responsible: { select: { name: true } } },
+      });
+      await tx.serviceOrder.update({
+        where: { id: orderId },
+        data: { status: "IN_PROGRESS", progress: STATUS_PROGRESS.IN_PROGRESS },
+      });
+    }
+
+    return { approval, event, part };
   });
 
   emitToOrder(orderId, "approval:update", { approval });
   emitToOrder(orderId, "timeline:new", { event });
+  if (part) {
+    emitToOrder(orderId, "part:update", { part });
+    emitToOrder(orderId, "status:update", { orderId, status: "IN_PROGRESS", progress: STATUS_PROGRESS.IN_PROGRESS });
+  }
   res.json({ approval });
 });

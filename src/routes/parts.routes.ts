@@ -103,6 +103,7 @@ partsRouter.post(
       const approval = await tx.approval.create({
         data: {
           serviceOrderId: orderId,
+          partId: part.id,
           title: "Novo problema identificado",
           description: `${name}: ${description}`,
           estimatedValue,
@@ -159,5 +160,41 @@ partsRouter.post(
     emitToOrder(orderId, "status:update", { orderId, status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL });
 
     res.status(201).json(result);
+  }
+);
+
+// O mecânico marca um problema (já aprovado e em reparo) como resolvido.
+partsRouter.post(
+  "/:partId/resolve",
+  requireAuth,
+  requireRole("MECHANIC", "ADMIN"),
+  async (req: AuthedRequest<{ orderId: string; partId: string }>, res) => {
+    const { orderId, partId } = req.params;
+
+    const existing = await prisma.vehiclePart.findUnique({ where: { id: partId } });
+    if (!existing || existing.serviceOrderId !== orderId) {
+      return res.status(404).json({ error: "Componente não encontrado nesta ordem de serviço." });
+    }
+
+    const [part, event] = await prisma.$transaction([
+      prisma.vehiclePart.update({
+        where: { id: partId },
+        data: { status: "DONE", responsibleId: req.user!.id },
+        include: { media: true, responsible: { select: { name: true } } },
+      }),
+      prisma.timelineEvent.create({
+        data: {
+          serviceOrderId: orderId,
+          title: `Problema resolvido: ${existing.name}`,
+          description: "Reparo concluído.",
+          authorId: req.user!.id,
+        },
+        include: { media: true, author: { select: { name: true } } },
+      }),
+    ]);
+
+    emitToOrder(orderId, "part:update", { part });
+    emitToOrder(orderId, "timeline:new", { event });
+    res.json({ part, event });
   }
 );

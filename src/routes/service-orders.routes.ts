@@ -83,6 +83,19 @@ serviceOrdersRouter.patch(
     if (!parsed.success) return res.status(400).json({ error: "Status inválido.", details: parsed.error.flatten() });
 
     const { status, progress } = parsed.data;
+
+    if (status === "READY_FOR_PICKUP") {
+      const unresolvedParts = await prisma.vehiclePart.count({
+        where: { serviceOrderId: req.params.id, status: { in: ["CRITICAL", "IN_PROGRESS", "WARNING"] } },
+      });
+      const pendingApprovals = await prisma.approval.count({
+        where: { serviceOrderId: req.params.id, status: "PENDING" },
+      });
+      if (unresolvedParts > 0 || pendingApprovals > 0) {
+        return res.status(409).json({ error: "Ainda há problemas não resolvidos nesta ordem de serviço." });
+      }
+    }
+
     const order = await prisma.serviceOrder.update({
       where: { id: req.params.id },
       data: {

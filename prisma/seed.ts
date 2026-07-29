@@ -138,33 +138,53 @@ async function main() {
         status: "NOT_INSPECTED",
         note: "Sem ruídos relatados. Verificação visual de corrosão incluída no checklist de entrega.",
       },
-      {
-        serviceOrderId: order.id,
-        key: "freios",
-        name: "Freios dianteiros",
-        status: "WARNING",
-        note: "Identificado desgaste de 70% nas pastilhas dianteiras. Fotos anexadas ao laudo — aguardando aprovação para troca.",
-        wearLevel: 70,
-        responsibleId: mechanic.id,
-      },
-      {
-        serviceOrderId: order.id,
-        key: "suspensao",
-        name: "Suspensão traseira",
-        status: "CRITICAL",
-        note: "Amortecedor traseiro direito com vazamento de óleo visível. Recomendação: substituição do par para manter equilíbrio de rodagem.",
-        wearLevel: 85,
-        responsibleId: mechanic.id,
-      },
     ],
+  });
+
+  // Peças com criadas via create() (não createMany) para termos o id e linkar a aprovação —
+  // é o mesmo caminho usado pelo endpoint /parts/problems em produção.
+  const freios = await prisma.vehiclePart.create({
+    data: {
+      serviceOrderId: order.id,
+      key: "freios",
+      name: "Freios dianteiros",
+      status: "WARNING",
+      note: "Identificado desgaste de 70% nas pastilhas dianteiras. Fotos anexadas ao laudo — aguardando aprovação para troca.",
+      wearLevel: 70,
+      responsibleId: mechanic.id,
+    },
+  });
+
+  const suspensao = await prisma.vehiclePart.create({
+    data: {
+      serviceOrderId: order.id,
+      key: "suspensao",
+      name: "Suspensão traseira",
+      status: "CRITICAL",
+      note: "Amortecedor traseiro direito com vazamento de óleo visível. Recomendação: substituição do par para manter equilíbrio de rodagem.",
+      wearLevel: 85,
+      responsibleId: mechanic.id,
+    },
   });
 
   const approval = await prisma.approval.create({
     data: {
       serviceOrderId: order.id,
+      partId: freios.id,
       title: "Novo problema encontrado",
       description: "Desgaste de 70% nas pastilhas dianteiras. Fotos anexadas. Requer sua aprovação para prosseguir.",
       estimatedValue: 420,
+      status: "PENDING",
+    },
+  });
+
+  await prisma.approval.create({
+    data: {
+      serviceOrderId: order.id,
+      partId: suspensao.id,
+      title: "Novo problema encontrado",
+      description: "Vazamento de óleo no amortecedor traseiro direito. Recomendação: substituição do par.",
+      estimatedValue: 680,
       status: "PENDING",
     },
   });

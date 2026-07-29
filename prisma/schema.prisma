@@ -119,7 +119,8 @@ model VehiclePart {
   updatedAt      DateTime     @updatedAt
   createdAt      DateTime     @default(now())
 
-  media Media[]
+  media     Media[]
+  approvals Approval[]
 
   @@unique([serviceOrderId, key])
 }
@@ -128,6 +129,10 @@ model Approval {
   id             String       @id @default(cuid())
   serviceOrderId String
   serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id])
+  // Componente ao qual este problema pertence — usado para colocar a peça em reparo
+  // quando o cliente aprova, e para o mecânico marcar como resolvido depois.
+  partId         String?
+  part           VehiclePart? @relation(fields: [partId], references: [id])
   title          String
   description    String
   estimatedValue Float?
