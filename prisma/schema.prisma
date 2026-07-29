@@ -1,0 +1,139 @@
+// Domínio da BOX. — ver especificação em /especificacao-experiencia-digital.html no repo da landing.
+// Status e enums são strings validadas em src/lib/constants.ts (não enums nativos do Prisma)
+// para manter a troca de SQLite -> Postgres no Render como uma alteração de uma linha no datasource.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String   @default("CUSTOMER") // CUSTOMER | MECHANIC | ADMIN
+  phone        String?
+  createdAt    DateTime @default(now())
+
+  vehicles       Vehicle[]
+  timelineEvents TimelineEvent[] @relation("EventAuthor")
+  vehicleParts   VehiclePart[]   @relation("PartResponsible")
+}
+
+model Vehicle {
+  id        String   @id @default(cuid())
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id])
+  brand     String
+  model     String
+  year      Int
+  engine    String?
+  plate     String?
+  mileage   Int      @default(0)
+  createdAt DateTime @default(now())
+
+  serviceOrders ServiceOrder[]
+}
+
+model ServiceOrder {
+  id            String    @id @default(cuid())
+  code          String    @unique // ex: OS-2026-04471
+  vehicleId     String
+  vehicle       Vehicle   @relation(fields: [vehicleId], references: [id])
+  status        String    @default("RECEIVED")
+  progress      Int       @default(0) // 0-100, calculado a partir do status + eventos
+  estimatedMin  Float?
+  estimatedMax  Float?
+  scheduledAt   DateTime?
+  receivedAt    DateTime  @default(now())
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  timelineEvents TimelineEvent[]
+  parts          VehiclePart[]
+  approvals      Approval[]
+  media          Media[]
+  chatMessages   ChatMessage[]
+}
+
+model TimelineEvent {
+  id             String       @id @default(cuid())
+  serviceOrderId String
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id])
+  title          String
+  description    String?
+  occurredAt     DateTime     @default(now())
+  done           Boolean      @default(true)
+  authorId       String?
+  author         User?        @relation("EventAuthor", fields: [authorId], references: [id])
+  createdAt      DateTime     @default(now())
+
+  media Media[]
+}
+
+model VehiclePart {
+  id             String       @id @default(cuid())
+  serviceOrderId String
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id])
+  key            String       // motor | freios | suspensao | transmissao | escapamento | eletrica | arcondicionado
+  name           String
+  status         String       @default("NOT_INSPECTED") // NOT_INSPECTED | IN_PROGRESS | WARNING | CRITICAL | DONE
+  note           String?
+  wearLevel      Int?         // 0-100
+  responsibleId  String?
+  responsible    User?        @relation("PartResponsible", fields: [responsibleId], references: [id])
+  warranty       String?
+  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime     @default(now())
+
+  media Media[]
+
+  @@unique([serviceOrderId, key])
+}
+
+model Approval {
+  id             String       @id @default(cuid())
+  serviceOrderId String
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id])
+  title          String
+  description    String
+  estimatedValue Float?
+  status         String       @default("PENDING") // PENDING | APPROVED | REJECTED
+  createdAt      DateTime     @default(now())
+  respondedAt    DateTime?
+
+  media Media[]
+}
+
+model Media {
+  id              String         @id @default(cuid())
+  serviceOrderId  String
+  serviceOrder    ServiceOrder   @relation(fields: [serviceOrderId], references: [id])
+  timelineEventId String?
+  timelineEvent   TimelineEvent? @relation(fields: [timelineEventId], references: [id])
+  partId          String?
+  part            VehiclePart?   @relation(fields: [partId], references: [id])
+  approvalId      String?
+  approval        Approval?      @relation(fields: [approvalId], references: [id])
+  url             String
+  type            String         // PHOTO | VIDEO | AUDIO | DOCUMENT
+  label           String?
+  createdAt       DateTime       @default(now())
+}
+
+model ChatMessage {
+  id             String       @id @default(cuid())
+  serviceOrderId String
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id])
+  senderRole     String       // CUSTOMER | MECHANIC
+  senderName     String
+  body           String?
+  attachmentUrl  String?
+  createdAt      DateTime     @default(now())
+}
