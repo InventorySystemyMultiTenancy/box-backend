@@ -23,6 +23,26 @@ const orderInclude = {
   media: { orderBy: { createdAt: "desc" as const } },
 };
 
+function hidePricesForMechanic<T extends { approvals?: any[]; estimatedMin?: number | null; estimatedMax?: number | null }>(order: T, role: string): T {
+  if (role !== "MECHANIC") return order;
+  return {
+    ...order,
+    estimatedMin: null,
+    estimatedMax: null,
+    approvals: order.approvals?.map((approval) => ({
+      ...approval,
+      laborValue: null,
+      partsValue: null,
+      estimatedValue: null,
+      partUsages: approval.partUsages?.map((usage: any) => ({
+        ...usage,
+        unitCostSnapshot: null,
+        inventoryPart: usage.inventoryPart ? { ...usage.inventoryPart, unitCost: null } : usage.inventoryPart,
+      })),
+    })),
+  };
+}
+
 serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const isStaff = req.user!.role === "MECHANIC" || req.user!.role === "ADMIN";
   const orders = await prisma.serviceOrder.findMany({
@@ -30,7 +50,7 @@ serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
     include: orderInclude,
     orderBy: { createdAt: "desc" },
   });
-  res.json({ orders });
+  res.json({ orders: orders.map((order) => hidePricesForMechanic(order, req.user!.role)) });
 });
 
 const createOrderSchema = z.object({
@@ -69,7 +89,7 @@ serviceOrdersRouter.get("/:id", requireAuth, async (req: AuthedRequest<{ id: str
 
   const order = await prisma.serviceOrder.findUnique({ where: { id: req.params.id }, include: orderInclude });
   if (!order) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
-  res.json({ order });
+  res.json({ order: hidePricesForMechanic(order, req.user!.role) });
 });
 
 const statusSchema = z.object({
