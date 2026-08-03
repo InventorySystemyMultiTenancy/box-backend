@@ -115,9 +115,14 @@ partsRouter.patch(
     if (!existing || existing.serviceOrderId !== req.params.orderId || !existing.partId) {
       return res.status(404).json({ error: "Problema não encontrado nesta ordem." });
     }
-    if (existing.status !== "PENDING") {
-      return res.status(409).json({ error: "Só é possível precificar problemas pendentes." });
+    if (existing.status === "REJECTED") {
+      return res.status(409).json({ error: "Não é possível precificar um problema reprovado." });
     }
+
+    // Precificar um problema já aprovado (em andamento ou já concluído) só corrige o
+    // valor registrado — não deve reabrir aprovação do cliente nem mexer no status da
+    // ordem. Só o primeiro preço (problema ainda PENDING) dispara o fluxo de aprovação.
+    const wasPending = existing.status === "PENDING";
 
     const result = await prisma.$transaction(async (tx) => {
       if (parsed.data.name || parsed.data.description) {
@@ -150,7 +155,6 @@ partsRouter.patch(
       const approval = await tx.approval.update({
         where: { id: existing.id },
         data: {
-          title: "Novo problema identificado",
           description: parsed.data.name ? `${parsed.data.name}: ${description}` : description,
           laborValue: parsed.data.laborValue,
           partsValue,
@@ -167,17 +171,19 @@ partsRouter.patch(
       const event = await tx.timelineEvent.create({
         data: {
           serviceOrderId: req.params.orderId,
-          title: "Problema precificado pelo admin",
+          title: wasPending ? "Problema precificado pelo admin" : "Preço do problema atualizado pelo admin",
           description: `Valor total: R$ ${(parsed.data.laborValue + partsValue).toFixed(2)}`,
           authorId: req.user!.id,
         },
         include: { media: true, author: { select: { name: true } } },
       });
 
-      await tx.serviceOrder.update({
-        where: { id: req.params.orderId },
-        data: { status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL },
-      });
+      if (wasPending) {
+        await tx.serviceOrder.update({
+          where: { id: req.params.orderId },
+          data: { status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL },
+        });
+      }
 
       return { approval, part, event };
     });
@@ -185,11 +191,13 @@ partsRouter.patch(
     emitToOrder(req.params.orderId, "approval:update", { approval: result.approval });
     if (result.part) emitToOrder(req.params.orderId, "part:update", { part: result.part });
     emitToOrder(req.params.orderId, "timeline:new", { event: result.event });
-    emitToOrder(req.params.orderId, "status:update", {
-      orderId: req.params.orderId,
-      status: "AWAITING_APPROVAL",
-      progress: STATUS_PROGRESS.AWAITING_APPROVAL,
-    });
+    if (wasPending) {
+      emitToOrder(req.params.orderId, "status:update", {
+        orderId: req.params.orderId,
+        status: "AWAITING_APPROVAL",
+        progress: STATUS_PROGRESS.AWAITING_APPROVAL,
+      });
+    }
     res.json(result);
   }
 );
