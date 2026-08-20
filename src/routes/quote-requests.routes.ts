@@ -179,6 +179,18 @@ quoteRequestsRouter.patch(
             },
           },
         },
+        include: { parts: true },
+      });
+
+      const initialPart = order.parts[0];
+      await tx.approval.create({
+        data: {
+          serviceOrderId: order.id,
+          partId: initialPart.id,
+          title: "Problema relatado pelo cliente",
+          description: existing.problemDescription,
+          status: "PENDING",
+        },
       });
 
       const request = await tx.quoteRequest.update({

@@ -15,8 +15,11 @@ const partSchema = z.object({
   active: z.coerce.boolean().optional(),
 });
 
-inventoryPartsRouter.get("/", requireAuth, requireRole("ADMIN"), async (_req, res) => {
+inventoryPartsRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
   const parts = await prisma.inventoryPart.findMany({ orderBy: { name: "asc" } });
+  if (req.user!.role === "MECHANIC") {
+    return res.json({ parts: parts.map((part) => ({ ...part, unitCost: null })) });
+  }
   res.json({ parts });
 });
 

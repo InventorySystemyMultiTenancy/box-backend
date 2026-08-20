@@ -329,6 +329,112 @@ partsRouter.post(
   }
 );
 
+const updateProblemSchema = z.object({
+  note: z.string().optional(),
+  partUsages: z.string().optional(),
+});
+
+// Mecânico (ou admin) acrescenta fotos, peças e observação a um problema já existente
+// (inicial do cliente ou encontrado durante o diagnóstico). Ao contrário de /pricing,
+// que substitui a lista de peças, aqui as peças são somadas às já existentes — o
+// mecânico está sugerindo peças, quem decide a lista final a precificar é o admin.
+partsRouter.post(
+  "/problems/:approvalId/updates",
+  requireAuth,
+  requireRole("MECHANIC", "ADMIN"),
+  upload.array("files", 12),
+  async (req: AuthedRequest<{ orderId: string; approvalId: string }>, res) => {
+    const orderId = req.params.orderId;
+    const allowed = await canAccessServiceOrder(req.user!.id, req.user!.role, orderId);
+    if (!allowed) return res.status(403).json({ error: "Sem acesso a esta ordem de serviço." });
+
+    const existing = await prisma.approval.findUnique({ where: { id: req.params.approvalId } });
+    if (!existing || existing.serviceOrderId !== orderId) {
+      return res.status(404).json({ error: "Problema não encontrado nesta ordem." });
+    }
+
+    const parsed = updateProblemSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+    const files = Array.isArray(req.files) ? req.files : [];
+    const uploadedFiles = await Promise.all(
+      files.map(async (file) => ({
+        file,
+        url: await persistUploadedFile(file),
+      }))
+    );
+
+    const result = await prisma.$transaction(async (tx) => {
+      if (parsed.data.partUsages) {
+        const usages = usageSchema.safeParse(JSON.parse(parsed.data.partUsages));
+        if (!usages.success) throw new Error("PART_USAGE_INVALID");
+        for (const usage of usages.data) {
+          const inventoryPart = await tx.inventoryPart.findUnique({ where: { id: usage.inventoryPartId } });
+          if (!inventoryPart || !inventoryPart.active) throw new Error("PART_NOT_FOUND");
+          await tx.problemPartUsage.create({
+            data: {
+              approvalId: existing.id,
+              inventoryPartId: inventoryPart.id,
+              quantity: usage.quantity,
+              unitCostSnapshot: inventoryPart.unitCost,
+            },
+          });
+        }
+      }
+
+      const allUsages = await tx.problemPartUsage.findMany({
+        where: { approvalId: existing.id },
+        include: { inventoryPart: true },
+      });
+      const partsValue = allUsages.reduce((sum, usage) => sum + usage.unitCostSnapshot * usage.quantity, 0);
+
+      const approval = await tx.approval.update({
+        where: { id: existing.id },
+        data: {
+          note: parsed.data.note !== undefined ? parsed.data.note : undefined,
+          partsValue,
+          estimatedValue: (existing.laborValue ?? 0) + partsValue,
+        },
+        include: { media: true, partUsages: { include: { inventoryPart: true } } },
+      });
+
+      if (uploadedFiles.length > 0) {
+        await tx.media.createMany({
+          data: uploadedFiles.map(({ file, url }) => ({
+            serviceOrderId: orderId,
+            partId: existing.partId ?? undefined,
+            approvalId: existing.id,
+            url,
+            type: guessMediaType(file.mimetype),
+            label: file.originalname,
+          })),
+        });
+      }
+
+      const event = await tx.timelineEvent.create({
+        data: {
+          serviceOrderId: orderId,
+          title: "Detalhes adicionados ao problema",
+          description: approval.description,
+          authorId: req.user!.id,
+        },
+        include: { media: true, author: { select: { name: true } } },
+      });
+
+      const approvalWithMedia = await tx.approval.findUnique({
+        where: { id: existing.id },
+        include: { media: true, partUsages: { include: { inventoryPart: true } } },
+      });
+
+      return { approval: approvalWithMedia!, event };
+    });
+
+    emitToOrder(orderId, "approval:update", { approval: result.approval });
+    emitToOrder(orderId, "timeline:new", { event: result.event });
+    res.status(201).json(result);
+  }
+);
+
 // O mecânico marca um problema (já aprovado e em reparo) como resolvido.
 partsRouter.post(
   "/:partId/start",

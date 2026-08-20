@@ -71,6 +71,8 @@ model ServiceOrder {
   scheduledAt   DateTime?
   receivedAt    DateTime  @default(now())
   completedAt   DateTime?
+  deliveryDescription String?
+  deliveryExtraValue  Float?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -154,6 +156,7 @@ model Approval {
   part           VehiclePart? @relation(fields: [partId], references: [id])
   title          String
   description    String
+  note           String?
   laborValue     Float?
   partsValue     Float?
   estimatedValue Float?
@@ -212,6 +215,7 @@ model Media {
   url             String
   type            String         // PHOTO | VIDEO | AUDIO | DOCUMENT
   label           String?
+  isDeliveryPhoto Boolean        @default(false)
   createdAt       DateTime       @default(now())
 }
 

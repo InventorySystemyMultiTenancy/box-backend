@@ -6,6 +6,7 @@ import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
 import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
+import { upload, persistUploadedFile } from "@/middleware/upload";
 
 export const serviceOrdersRouter = Router();
 
@@ -23,12 +24,13 @@ const orderInclude = {
   media: { orderBy: { createdAt: "desc" as const } },
 };
 
-function hidePricesForMechanic<T extends { approvals?: any[]; estimatedMin?: number | null; estimatedMax?: number | null }>(order: T, role: string): T {
+function hidePricesForMechanic<T extends { approvals?: any[]; estimatedMin?: number | null; estimatedMax?: number | null; deliveryExtraValue?: number | null }>(order: T, role: string): T {
   if (role !== "MECHANIC") return order;
   return {
     ...order,
     estimatedMin: null,
     estimatedMax: null,
+    deliveryExtraValue: null,
     approvals: order.approvals?.map((approval) => ({
       ...approval,
       laborValue: null,
@@ -106,57 +108,113 @@ serviceOrdersRouter.patch(
     if (!parsed.success) return res.status(400).json({ error: "Status inválido.", details: parsed.error.flatten() });
 
     const { status, progress } = parsed.data;
-    if (status === "READY_FOR_PICKUP" && req.user!.role !== "ADMIN") {
-      return res.status(403).json({ error: "Apenas o admin pode finalizar projetos." });
-    }
-
     if (status === "READY_FOR_PICKUP") {
-      const unresolvedParts = await prisma.vehiclePart.count({
-        where: { serviceOrderId: req.params.id, status: { in: ["CRITICAL", "IN_PROGRESS", "WARNING"] } },
-      });
-      const pendingApprovals = await prisma.approval.count({
-        where: { serviceOrderId: req.params.id, status: "PENDING" },
-      });
-      if (unresolvedParts > 0 || pendingApprovals > 0) {
-        return res.status(409).json({ error: "Ainda há problemas não resolvidos nesta ordem de serviço." });
-      }
+      return res.status(400).json({ error: "Use /api/service-orders/:id/finalize para finalizar e entregar o veículo." });
     }
 
     const order = await prisma.$transaction(async (tx) => {
       const order = await tx.serviceOrder.update({
         where: { id: req.params.id },
-        data: {
-          status,
-          progress: progress ?? STATUS_PROGRESS[status],
-          completedAt: status === "READY_FOR_PICKUP" ? new Date() : undefined,
-        },
+        data: { status, progress: progress ?? STATUS_PROGRESS[status] },
       });
-
-      if (status === "READY_FOR_PICKUP") {
-        const existingIncome = await tx.financialEntry.findFirst({
-          where: { serviceOrderId: order.id, type: "INCOME", category: "PROJETO" },
-        });
-        if (!existingIncome) {
-          const approvals = await tx.approval.findMany({
-            where: { serviceOrderId: order.id, status: "APPROVED" },
-          });
-          const total = approvals.reduce((sum, approval) => sum + (approval.estimatedValue ?? 0), 0) || order.estimatedMin || 0;
-          await tx.financialEntry.create({
-            data: {
-              type: "INCOME",
-              category: "PROJETO",
-              description: `Entrada do projeto ${order.code}`,
-              amount: total,
-              serviceOrderId: order.id,
-            },
-          });
-        }
-      }
 
       return order;
     });
 
     emitToOrder(order.id, "status:update", { orderId: order.id, status: order.status, progress: order.progress });
+    res.json({ order });
+  }
+);
+
+const finalizeSchema = z.object({
+  description: z.string().optional(),
+  extraValue: z.coerce.number().min(0).optional(),
+});
+
+// Admin finaliza e entrega o veículo: além de liberar a retirada, pode registrar uma
+// foto extra do veículo pronto, uma descrição e um valor extra (ex.: lavagem, taxa de
+// entrega) somado por fora dos preços já aprovados dos problemas/peças.
+serviceOrdersRouter.patch(
+  "/:id/finalize",
+  requireAuth,
+  requireRole("ADMIN"),
+  upload.single("photo"),
+  async (req: AuthedRequest<{ id: string }>, res) => {
+    const parsed = finalizeSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+    const unresolvedParts = await prisma.vehiclePart.count({
+      where: { serviceOrderId: req.params.id, status: { in: ["CRITICAL", "IN_PROGRESS", "WARNING"] } },
+    });
+    const pendingApprovals = await prisma.approval.count({
+      where: { serviceOrderId: req.params.id, status: "PENDING" },
+    });
+    if (unresolvedParts > 0 || pendingApprovals > 0) {
+      return res.status(409).json({ error: "Ainda há problemas não resolvidos nesta ordem de serviço." });
+    }
+
+    const photoUrl = req.file ? await persistUploadedFile(req.file) : undefined;
+    const { description, extraValue } = parsed.data;
+
+    const order = await prisma.$transaction(async (tx) => {
+      const order = await tx.serviceOrder.update({
+        where: { id: req.params.id },
+        data: {
+          status: "READY_FOR_PICKUP",
+          progress: STATUS_PROGRESS.READY_FOR_PICKUP,
+          completedAt: new Date(),
+          deliveryDescription: description,
+          deliveryExtraValue: extraValue,
+        },
+      });
+
+      const existingIncome = await tx.financialEntry.findFirst({
+        where: { serviceOrderId: order.id, type: "INCOME", category: "PROJETO" },
+      });
+      if (!existingIncome) {
+        const approvals = await tx.approval.findMany({
+          where: { serviceOrderId: order.id, status: "APPROVED" },
+        });
+        const total = approvals.reduce((sum, approval) => sum + (approval.estimatedValue ?? 0), 0) || order.estimatedMin || 0;
+        await tx.financialEntry.create({
+          data: {
+            type: "INCOME",
+            category: "PROJETO",
+            description: `Entrada do projeto ${order.code}`,
+            amount: total,
+            serviceOrderId: order.id,
+          },
+        });
+      }
+
+      if (extraValue && extraValue > 0) {
+        await tx.financialEntry.create({
+          data: {
+            type: "INCOME",
+            category: "ENTREGA_EXTRA",
+            description: `Valor extra na entrega — ${order.code}`,
+            amount: extraValue,
+            serviceOrderId: order.id,
+          },
+        });
+      }
+
+      if (photoUrl) {
+        await tx.media.create({
+          data: {
+            serviceOrderId: order.id,
+            url: photoUrl,
+            type: "PHOTO",
+            label: "Foto de entrega do veículo",
+            isDeliveryPhoto: true,
+          },
+        });
+      }
+
+      return tx.serviceOrder.findUnique({ where: { id: order.id }, include: orderInclude });
+    });
+
+    emitToOrder(order!.id, "status:update", { orderId: order!.id, status: order!.status, progress: order!.progress });
     res.json({ order });
   }
 );
