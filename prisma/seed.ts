@@ -17,7 +17,41 @@ async function main() {
   await prisma.timelineEvent.deleteMany();
   await prisma.serviceOrder.deleteMany();
   await prisma.vehicle.deleteMany();
+  await prisma.client.deleteMany();
+  await prisma.userPermission.deleteMany();
   await prisma.user.deleteMany();
+  await prisma.rolePermission.deleteMany();
+  await prisma.permission.deleteMany();
+  await prisma.role.deleteMany();
+
+  console.log("Seed: cargos e permissões...");
+  const permissionsCatalog = [
+    { resource: "clients", action: "view" },
+    { resource: "clients", action: "create" },
+    { resource: "clients", action: "edit" },
+    { resource: "clients", action: "delete" },
+    { resource: "roles", action: "view" },
+    { resource: "roles", action: "manage" },
+  ];
+  const permissions = await Promise.all(
+    permissionsCatalog.map((p) => prisma.permission.create({ data: p }))
+  );
+  const permissionByKey = (resource: string, action: string) =>
+    permissions.find((p) => p.resource === resource && p.action === action)!.id;
+
+  const adminRole = await prisma.role.create({
+    data: { name: "Administrador", slug: "admin", isSystem: true },
+  });
+  const mechanicRole = await prisma.role.create({
+    data: { name: "Mecânico", slug: "mecanico", isSystem: true },
+  });
+
+  await prisma.rolePermission.createMany({
+    data: permissions.map((p) => ({ roleId: adminRole.id, permissionId: p.id })),
+  });
+  await prisma.rolePermission.create({
+    data: { roleId: mechanicRole.id, permissionId: permissionByKey("clients", "view") },
+  });
 
   const customerPassword = await bcrypt.hash("cliente123", 10);
   const mechanicPassword = await bcrypt.hash("mecanico123", 10);
@@ -39,6 +73,7 @@ async function main() {
       email: "diego@box.demo",
       passwordHash: mechanicPassword,
       role: "MECHANIC",
+      roleId: mechanicRole.id,
     },
   });
 
@@ -48,6 +83,7 @@ async function main() {
       email: "admin@box.demo",
       passwordHash: adminPassword,
       role: "ADMIN",
+      roleId: adminRole.id,
     },
   });
 
@@ -79,6 +115,15 @@ async function main() {
       role: "CUSTOMER",
       phone: "+55 11 90000-0002",
     },
+  });
+
+  console.log("Seed: backfill de clientes (CRM)...");
+  await prisma.client.createMany({
+    data: [
+      { userId: customer.id, name: customer.name, email: customer.email, phone: customer.phone },
+      { userId: customerNoOrder.id, name: customerNoOrder.name, email: customerNoOrder.email, phone: customerNoOrder.phone },
+      { userId: customerWithRequest.id, name: customerWithRequest.name, email: customerWithRequest.email, phone: customerWithRequest.phone },
+    ],
   });
 
   const vehicle = await prisma.vehicle.create({

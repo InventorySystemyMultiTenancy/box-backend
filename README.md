@@ -9,18 +9,20 @@ Deploy alvo: **Render**.
 ## Stack
 
 - Node.js + TypeScript + Express 5
-- Prisma ORM — SQLite em desenvolvimento, Postgres em produção
+- Prisma ORM — Postgres em desenvolvimento e produção
 - Socket.io para eventos em tempo real (timeline, status, peças, aprovações, chat)
-- JWT (jsonwebtoken + bcryptjs) para autenticação
+- JWT (jsonwebtoken + bcryptjs) para autenticação, com cargos (Role) e permissões granulares
 - Multer para upload de fotos/vídeos/áudios
 
 ## Como rodar localmente
 
+Requer um banco Postgres acessível (local, Docker ou um banco de dev na nuvem como Neon/Render/Supabase).
+
 ```bash
 npm install
-cp .env.example .env      # já vem com um SQLite local, não precisa editar nada para começar
-npm run prisma:migrate    # cria o banco (prisma/dev.db) e aplica o schema
-npm run seed               # popula um cenário de demonstração completo
+cp .env.example .env      # edite DATABASE_URL com a connection string do seu Postgres
+npm run prisma:migrate    # aplica o schema
+npm run seed               # popula um cenário de demonstração completo (cargos, permissões, clientes)
 npm run dev                 # sobe em http://localhost:4000
 ```
 
@@ -30,6 +32,7 @@ Contas criadas pelo seed:
 |-----------|--------------------|--------------|
 | Cliente   | cliente@box.demo   | cliente123   |
 | Mecânico  | diego@box.demo     | mecanico123  |
+| Admin     | admin@box.demo     | admin123     |
 
 ## Scripts
 
@@ -39,12 +42,11 @@ Contas criadas pelo seed:
 - `npm run prisma:studio` — inspeciona os dados em uma UI
 - `npm run seed` — repopula os dados de demonstração
 
-## Migrando de SQLite para Postgres (Render)
+## Deploy (Render)
 
 1. Crie um banco Postgres no Render (ou Neon) e copie a connection string.
-2. Em `prisma/schema.prisma`, troque `provider = "sqlite"` por `provider = "postgresql"`.
-3. Defina `DATABASE_URL` no ambiente do Render com a connection string.
-4. Rode `npx prisma migrate deploy` no primeiro deploy.
+2. Defina `DATABASE_URL` no ambiente do Render com a connection string.
+3. Rode `npx prisma migrate deploy` no primeiro deploy.
 
 ## Estrutura
 
@@ -52,9 +54,12 @@ Contas criadas pelo seed:
 src/
   app.ts              # montagem do Express e das rotas
   server.ts           # HTTP server + bootstrap do Socket.io
-  lib/                # prisma client, jwt, constantes de domínio, autorização
-  middleware/          # auth (JWT), upload (multer)
-  routes/              # auth, vehicles, service-orders, timeline, parts, approvals, chat, uploads
+  lib/                # prisma client, jwt, constantes de domínio, autorização, paginação
+  middleware/          # auth (JWT + role legado), permissions (cargo + permissão granular), upload (multer)
+  services/             # regra de negócio dos módulos novos (clients, roles/permissions) — módulos
+                          # mais antigos ainda têm a lógica direto nas rotas, migração é gradual
+  routes/              # auth, vehicles, service-orders, timeline, parts, approvals, chat, uploads,
+                          # quote-requests, inventory-parts, finance, clients, roles
   sockets/              # gateway Socket.io (join-order, emitToOrder)
 prisma/
   schema.prisma

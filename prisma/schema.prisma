@@ -20,11 +20,93 @@ model User {
   phone        String?
   createdAt    DateTime @default(now())
 
+  // Cargo (Role) — granularidade fina de permissões, além do `role` acima que
+  // continua sendo usado pelas rotas legadas (requireRole). Só STAFF tem cargo.
+  roleId          String?
+  roleRef         Role?            @relation(fields: [roleId], references: [id])
+  userPermissions UserPermission[]
+
   vehicles              Vehicle[]
   timelineEvents        TimelineEvent[] @relation("EventAuthor")
   vehicleParts          VehiclePart[]   @relation("PartResponsible")
   quoteRequestsAsCustomer QuoteRequest[] @relation("QuoteRequestCustomer")
   quoteRequestsAsMechanic QuoteRequest[] @relation("QuoteRequestMechanic")
+  client                Client?
+}
+
+// Cargo administrável (Mecânico, Financeiro, Gerente...) — não hardcoded.
+model Role {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  isSystem    Boolean  @default(false) // protege roles seed (Administrador/Mecânico) contra exclusão
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users           User[]
+  rolePermissions RolePermission[]
+}
+
+// Catálogo de permissões conhecidas pelo código (resource + action).
+model Permission {
+  id          String   @id @default(cuid())
+  resource    String
+  action      String
+  description String?
+
+  rolePermissions RolePermission[]
+  userPermissions UserPermission[]
+
+  @@unique([resource, action])
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+// Exceção por funcionário: granted=true concede além do cargo, granted=false revoga.
+model UserPermission {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  granted      Boolean
+
+  @@unique([userId, permissionId])
+}
+
+// Cadastro de cliente (CRM) — entidade de negócio separada do login.
+// Vinculado opcionalmente a um User (quando o cliente tem conta no portal).
+model Client {
+  id            String    @id @default(cuid())
+  userId        String?   @unique
+  user          User?     @relation(fields: [userId], references: [id])
+  name          String
+  cpfCnpj       String?
+  rg            String?
+  birthDate     DateTime?
+  phone         String?
+  whatsapp      String?
+  email         String?
+  addressLine   String?
+  zipCode       String?
+  city          String?
+  state         String?
+  company       String?
+  clientType    String    @default("INDIVIDUAL") // INDIVIDUAL | COMPANY
+  notes         String?
+  internalNotes String?
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 }
 
 model InventoryPart {

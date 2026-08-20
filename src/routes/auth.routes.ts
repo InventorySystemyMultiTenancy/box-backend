@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { signToken } from "@/lib/jwt";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
+import { getEffectivePermissions } from "@/services/permissions.service";
 
 export const authRouter = Router();
 
@@ -35,6 +36,7 @@ authRouter.post("/register", async (req, res) => {
 
 const staffCreateUserSchema = registerSchema.extend({
   role: z.enum(["CUSTOMER", "MECHANIC", "ADMIN"]),
+  roleId: z.string().optional(),
 });
 
 authRouter.get("/users", requireAuth, requireRole("ADMIN"), async (_req, res) => {
@@ -50,14 +52,14 @@ authRouter.post("/users", requireAuth, requireRole("ADMIN"), async (req, res) =>
   if (!parsed.success) {
     return res.status(400).json({ error: "Dados invÃ¡lidos.", details: parsed.error.flatten() });
   }
-  const { name, email, password, role, phone } = parsed.data;
+  const { name, email, password, role, roleId, phone } = parsed.data;
 
   const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) return res.status(409).json({ error: "Este e-mail jÃ¡ estÃ¡ cadastrado." });
+  if (existing) return res.status(409).json({ error: "Este e-mail já está cadastrado." });
 
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { name, email, passwordHash, role, phone },
+    data: { name, email, passwordHash, role, roleId, phone },
   });
 
   res.status(201).json({ user: toPublicUser(user) });
@@ -68,6 +70,7 @@ const updateUserSchema = z.object({
   email: z.string().email().optional(),
   phone: z.string().nullable().optional(),
   role: z.enum(["CUSTOMER", "MECHANIC", "ADMIN"]).optional(),
+  roleId: z.string().nullable().optional(),
   password: z.string().min(6).optional(),
 });
 
@@ -83,6 +86,7 @@ authRouter.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req: Au
       email: parsed.data.email,
       phone: parsed.data.phone,
       role: parsed.data.role,
+      roleId: parsed.data.roleId,
       ...(passwordHash ? { passwordHash } : {}),
     },
   });
@@ -116,6 +120,11 @@ authRouter.get("/me", requireAuth, async (req: AuthedRequest, res) => {
   res.json({ user: toPublicUser(user) });
 });
 
-function toPublicUser(user: { id: string; name: string; email: string; role: string; phone: string | null }) {
-  return { id: user.id, name: user.name, email: user.email, role: user.role, phone: user.phone };
+authRouter.get("/me/permissions", requireAuth, async (req: AuthedRequest, res) => {
+  const effective = await getEffectivePermissions(req.user!.id);
+  res.json({ permissions: Array.from(effective) });
+});
+
+function toPublicUser(user: { id: string; name: string; email: string; role: string; roleId?: string | null; phone: string | null }) {
+  return { id: user.id, name: user.name, email: user.email, role: user.role, roleId: user.roleId ?? null, phone: user.phone };
 }

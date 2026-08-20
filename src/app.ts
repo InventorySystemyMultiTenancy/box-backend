@@ -12,6 +12,8 @@ import { uploadsRouter } from "@/routes/uploads.routes";
 import { quoteRequestsRouter } from "@/routes/quote-requests.routes";
 import { inventoryPartsRouter } from "@/routes/inventory-parts.routes";
 import { financeRouter } from "@/routes/finance.routes";
+import { clientsRouter } from "@/routes/clients.routes";
+import { rolesRouter, permissionsRouter } from "@/routes/roles.routes";
 
 export const app = express();
 
@@ -32,5 +34,8 @@ app.use("/api/uploads", uploadsRouter);
 app.use("/api/quote-requests", quoteRequestsRouter);
 app.use("/api/inventory-parts", inventoryPartsRouter);
 app.use("/api/finance", financeRouter);
+app.use("/api/clients", clientsRouter);
+app.use("/api/roles", rolesRouter);
+app.use("/api/permissions", permissionsRouter);
 
 app.use((_req, res) => res.status(404).json({ error: "Rota não encontrada." }));
