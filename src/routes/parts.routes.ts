@@ -435,7 +435,9 @@ partsRouter.post(
   }
 );
 
-// O mecânico marca um problema (já aprovado e em reparo) como resolvido.
+// Mecânico/admin inicia o reparo de um componente — não depende da aprovação do
+// cliente (a aprovação segue existindo para o cliente acompanhar/aprovar o orçamento,
+// mas não bloqueia o início do trabalho).
 partsRouter.post(
   "/:partId/start",
   requireAuth,
@@ -446,14 +448,6 @@ partsRouter.post(
     const existing = await prisma.vehiclePart.findUnique({ where: { id: partId } });
     if (!existing || existing.serviceOrderId !== orderId) {
       return res.status(404).json({ error: "Componente nao encontrado nesta ordem de servico." });
-    }
-
-    const approval = await prisma.approval.findFirst({
-      where: { serviceOrderId: orderId, partId },
-      orderBy: { createdAt: "desc" },
-    });
-    if (approval && approval.status !== "APPROVED") {
-      return res.status(409).json({ error: "Este problema precisa ser aprovado pelo cliente antes de iniciar a manutencao." });
     }
 
     const [part, event, order] = await prisma.$transaction([
