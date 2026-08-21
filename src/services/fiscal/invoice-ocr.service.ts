@@ -8,10 +8,20 @@ export class InvoiceOcrError extends Error {
 
 export interface ExtractedInvoiceData {
   type: "NFE" | "NFSE" | "NFCE";
-  totalAmount: number | null;
+  number: string | null;
+  series: string | null;
+  accessKey: string | null;
+  operationNature: string | null;
+  issuerName: string | null;
+  issuerDocument: string | null;
+  recipientName: string | null;
+  recipientDocument: string | null;
+  paymentMethod: string | null;
   description: string;
+  totalAmount: number | null;
+  discountAmount: number | null;
+  taxAmount: number | null;
   issueDate: string | null;
-  clientNameGuess: string | null;
 }
 
 const OPENAI_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
@@ -19,13 +29,23 @@ const OPENAI_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
 const EXTRACTION_PROMPT = `Extraia os dados desta nota fiscal brasileira (foto ou print) e responda APENAS com um JSON válido, sem markdown, no formato:
 {
   "type": "NFE" | "NFSE" | "NFCE",
+  "number": "<número da nota, só dígitos, ou null>",
+  "series": "<série da nota, ou null>",
+  "accessKey": "<chave de acesso de 44 dígitos, se visível, ou null>",
+  "operationNature": "<natureza da operação, ex: 'Venda de mercadoria' ou 'Prestação de serviço', ou null>",
+  "issuerName": "<nome/razão social de quem EMITIU a nota, ou null>",
+  "issuerDocument": "<CNPJ ou CPF do emitente, só dígitos, ou null>",
+  "recipientName": "<nome/razão social do destinatário/tomador, ou null>",
+  "recipientDocument": "<CNPJ ou CPF do destinatário, só dígitos, ou null>",
+  "paymentMethod": "<forma de pagamento se visível, ex: 'PIX', 'Dinheiro', 'Cartão de crédito', ou null>",
+  "description": "<discriminação resumida dos produtos/serviços, ex: 'Troca de bomba d'água e pastilhas de freio'>",
   "totalAmount": <número, valor total em reais, sem formatação, ex: 1234.56>,
-  "description": "<string curta: número da nota + emitente, ex: 'NF 12345 - AutoPeças SP Ltda'>",
-  "issueDate": "<data de emissão YYYY-MM-DD, ou null se não estiver visível>",
-  "clientNameGuess": "<nome do destinatário/tomador do serviço, ou null se não estiver visível>"
+  "discountAmount": <número, valor de desconto se houver, senão 0>,
+  "taxAmount": <número, soma de impostos destacados (ICMS/ISS/etc) se houver, senão 0>,
+  "issueDate": "<data de emissão YYYY-MM-DD, ou null>"
 }
 "type": use NFSE para nota de serviço, NFE para nota de produto/mercadoria, NFCE para cupom fiscal de consumidor.
-Se algum campo não for legível na imagem, use null (ou 0 para totalAmount). Responda só o JSON, nada mais.`;
+Se algum campo não for legível na imagem, use null (ou 0 para valores numéricos). Responda só o JSON, nada mais.`;
 
 // Lê uma nota fiscal fotografada/escaneada via OpenAI Vision e devolve os campos já
 // estruturados para pré-preencher o formulário — o usuário confere e confirma antes
@@ -48,7 +68,7 @@ export async function extractInvoiceFromImage(filePath: string, mimetype: string
     body: JSON.stringify({
       model: OPENAI_MODEL,
       response_format: { type: "json_object" },
-      max_tokens: 500,
+      max_tokens: 700,
       messages: [
         {
           role: "system",
@@ -81,14 +101,25 @@ export async function extractInvoiceFromImage(filePath: string, mimetype: string
     throw new InvoiceOcrError("A IA retornou um formato inesperado.", 502);
   }
 
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const num = (v: unknown) => (typeof v === "number" && v > 0 ? v : null);
   const type = ["NFE", "NFSE", "NFCE"].includes(parsed.type as string) ? (parsed.type as "NFE" | "NFSE" | "NFCE") : "NFSE";
-  const totalAmount = typeof parsed.totalAmount === "number" && parsed.totalAmount > 0 ? parsed.totalAmount : null;
 
   return {
     type,
-    totalAmount,
-    description: typeof parsed.description === "string" && parsed.description.trim() ? parsed.description.trim() : "Nota fiscal (extraída por IA)",
-    issueDate: typeof parsed.issueDate === "string" ? parsed.issueDate : null,
-    clientNameGuess: typeof parsed.clientNameGuess === "string" ? parsed.clientNameGuess : null,
+    number: str(parsed.number),
+    series: str(parsed.series),
+    accessKey: str(parsed.accessKey),
+    operationNature: str(parsed.operationNature),
+    issuerName: str(parsed.issuerName),
+    issuerDocument: str(parsed.issuerDocument),
+    recipientName: str(parsed.recipientName),
+    recipientDocument: str(parsed.recipientDocument),
+    paymentMethod: str(parsed.paymentMethod),
+    description: str(parsed.description) ?? "Nota fiscal (extraída por IA)",
+    totalAmount: num(parsed.totalAmount),
+    discountAmount: num(parsed.discountAmount),
+    taxAmount: num(parsed.taxAmount),
+    issueDate: str(parsed.issueDate),
   };
 }

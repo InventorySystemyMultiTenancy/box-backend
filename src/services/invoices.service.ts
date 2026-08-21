@@ -16,6 +16,20 @@ export interface InvoiceInput {
   serviceOrderId?: string;
   clientId?: string;
   accountReceivableId?: string;
+  // Preenchidos quando a nota já existe fisicamente (digitada à mão ou lida por IA a
+  // partir de uma foto) — nesse caso a nota nasce ISSUED, não DRAFT.
+  number?: string;
+  series?: string;
+  accessKey?: string;
+  operationNature?: string;
+  issuerName?: string;
+  issuerDocument?: string;
+  recipientName?: string;
+  recipientDocument?: string;
+  paymentMethod?: string;
+  discountAmount?: number;
+  taxAmount?: number;
+  issueDate?: string;
 }
 
 // Ponto único de troca do gateway fiscal — plugar um provider real aqui quando a
@@ -46,16 +60,32 @@ export async function listInvoices(query: Record<string, unknown>) {
   return paginated(items, total, pageParams);
 }
 
+// Se `number` vier preenchido, a nota já existe fisicamente (digitada ou lida de uma
+// foto) — nasce ISSUED. Caso contrário, nasce DRAFT para ser emitida depois via /issue.
 export async function createInvoiceDraft(input: InvoiceInput) {
+  const isExisting = Boolean(input.number);
   return prisma.invoice.create({
     data: {
       type: input.type,
-      status: "DRAFT",
+      status: isExisting ? "ISSUED" : "DRAFT",
       totalAmount: input.totalAmount,
+      description: input.description,
       serviceOrderId: input.serviceOrderId,
       clientId: input.clientId,
       accountReceivableId: input.accountReceivableId,
-      provider: provider.name,
+      number: input.number,
+      series: input.series,
+      accessKey: input.accessKey,
+      operationNature: input.operationNature,
+      issuerName: input.issuerName,
+      issuerDocument: input.issuerDocument,
+      recipientName: input.recipientName,
+      recipientDocument: input.recipientDocument,
+      paymentMethod: input.paymentMethod,
+      discountAmount: input.discountAmount,
+      taxAmount: input.taxAmount,
+      issueDate: isExisting ? new Date(input.issueDate ?? Date.now()) : undefined,
+      provider: isExisting ? "MANUAL" : provider.name,
     },
   });
 }

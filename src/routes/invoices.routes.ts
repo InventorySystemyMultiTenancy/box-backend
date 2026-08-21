@@ -12,6 +12,7 @@ import {
   InvoiceError,
 } from "@/services/invoices.service";
 import { extractInvoiceFromImage, InvoiceOcrError } from "@/services/fiscal/invoice-ocr.service";
+import { findOrCreateClientFromDocument } from "@/services/clients.service";
 
 export const invoicesRouter = Router();
 
@@ -25,7 +26,10 @@ invoicesRouter.post(
 
     try {
       const extracted = await extractInvoiceFromImage(req.file.path, req.file.mimetype);
-      res.json({ extracted });
+      // Casa (ou cadastra automaticamente) o cliente identificado na imagem como
+      // destinatário — o usuário só confirma no formulário antes de salvar a nota.
+      const { client, created } = await findOrCreateClientFromDocument(extracted.recipientName, extracted.recipientDocument);
+      res.json({ extracted, clientId: client?.id ?? null, clientName: client?.name ?? null, clientCreated: created });
     } catch (err) {
       if (err instanceof InvoiceOcrError) return res.status(err.status).json({ error: err.message });
       throw err;
@@ -42,6 +46,18 @@ const createSchema = z.object({
   serviceOrderId: z.string().optional(),
   clientId: z.string().optional(),
   accountReceivableId: z.string().optional(),
+  number: z.string().optional(),
+  series: z.string().optional(),
+  accessKey: z.string().optional(),
+  operationNature: z.string().optional(),
+  issuerName: z.string().optional(),
+  issuerDocument: z.string().optional(),
+  recipientName: z.string().optional(),
+  recipientDocument: z.string().optional(),
+  paymentMethod: z.string().optional(),
+  discountAmount: z.number().min(0).optional(),
+  taxAmount: z.number().min(0).optional(),
+  issueDate: z.string().optional(),
 });
 
 invoicesRouter.get("/", requireAuth, requirePermission("invoices", "view"), async (req, res) => {

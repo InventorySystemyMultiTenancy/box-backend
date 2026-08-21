@@ -130,3 +130,32 @@ export async function archiveClient(id: string) {
   if (!client) throw new ClientError("Cliente não encontrado.", 404);
   await prisma.client.update({ where: { id }, data: { active: false } });
 }
+
+// Usado pela leitura de nota fiscal por IA: casa o destinatário identificado na imagem
+// com um cliente já cadastrado (por CPF/CNPJ, depois por nome exato) ou cadastra um novo
+// automaticamente com os dados extraídos, para o usuário só confirmar no formulário.
+export async function findOrCreateClientFromDocument(name?: string | null, cpfCnpj?: string | null) {
+  const cleanName = name?.trim();
+  const cleanDoc = cpfCnpj?.trim();
+  if (!cleanName && !cleanDoc) return { client: null, created: false };
+
+  if (cleanDoc) {
+    const byDoc = await prisma.client.findFirst({ where: { cpfCnpj: cleanDoc } });
+    if (byDoc) return { client: byDoc, created: false };
+  }
+  if (cleanName) {
+    const byName = await prisma.client.findFirst({ where: { name: { equals: cleanName, mode: "insensitive" } } });
+    if (byName) return { client: byName, created: false };
+  }
+  if (!cleanName) return { client: null, created: false };
+
+  const created = await prisma.client.create({
+    data: {
+      name: cleanName,
+      cpfCnpj: cleanDoc || undefined,
+      clientType: cleanDoc && cleanDoc.replace(/\D/g, "").length > 11 ? "COMPANY" : "INDIVIDUAL",
+      internalNotes: "Cadastrado automaticamente a partir da leitura de nota fiscal por IA — confira os dados.",
+    },
+  });
+  return { client: created, created: true };
+}

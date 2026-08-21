@@ -165,7 +165,9 @@ model Invoice {
   status              String              @default("DRAFT") // DRAFT | PENDING | ISSUED | CANCELLED | ERROR
   number              String?
   series              String?
-  provider            String              @default("MOCK")
+  accessKey           String? // chave de acesso (NF-e/NFC-e, 44 dígitos) quando visível no documento
+  operationNature      String? // natureza da operação (ex: "Venda de mercadoria", "Prestação de serviço")
+  provider            String              @default("MOCK") // MOCK (emitido por nós) | MANUAL (registrado a partir de um documento já existente)
   providerRef         String?
   serviceOrderId      String?
   serviceOrder        ServiceOrder?       @relation(fields: [serviceOrderId], references: [id])
@@ -173,7 +175,16 @@ model Invoice {
   client              Client?             @relation(fields: [clientId], references: [id])
   accountReceivableId String?
   accountReceivable   AccountReceivable?  @relation(fields: [accountReceivableId], references: [id])
+  // Emitente/destinatário como texto — snapshot do documento, independe de o Client mudar depois.
+  issuerName          String?
+  issuerDocument      String?
+  recipientName       String?
+  recipientDocument   String?
+  paymentMethod       String?
+  description         String? // discriminação dos produtos/serviços
   totalAmount         Float
+  discountAmount      Float?
+  taxAmount           Float?
   issueDate           DateTime?
   cancelledAt         DateTime?
   xmlUrl              String?
