@@ -6,8 +6,10 @@ import { prisma } from "@/lib/prisma";
 // nascer demonstrável, sem tela vazia.
 async function main() {
   console.log("Seed: limpando dados existentes...");
+  await prisma.notificationLog.deleteMany();
   await prisma.appointment.deleteMany();
   await prisma.bay.deleteMany();
+  await prisma.counterSale.deleteMany();
   await prisma.purchaseOrderItem.deleteMany();
   await prisma.purchaseOrder.deleteMany();
   await prisma.invoice.deleteMany();
@@ -51,6 +53,11 @@ async function main() {
     { resource: "purchases", action: "manage" },
     { resource: "agenda", action: "view" },
     { resource: "agenda", action: "manage" },
+    { resource: "pdv", action: "view" },
+    { resource: "pdv", action: "manage" },
+    { resource: "reports", action: "view" },
+    { resource: "warranties", action: "view" },
+    { resource: "warranties", action: "manage" },
   ];
   const permissions = await Promise.all(
     permissionsCatalog.map((p) => prisma.permission.create({ data: p }))
@@ -72,6 +79,7 @@ async function main() {
     data: [
       { roleId: mechanicRole.id, permissionId: permissionByKey("clients", "view") },
       { roleId: mechanicRole.id, permissionId: permissionByKey("agenda", "view") },
+      { roleId: mechanicRole.id, permissionId: permissionByKey("warranties", "manage") },
     ],
   });
 
@@ -209,6 +217,9 @@ async function main() {
         wearLevel: 0,
         responsibleId: mechanic.id,
         warranty: "12 meses",
+        warrantyMonths: 12,
+        warrantyStartAt: monthsAgo(11),
+        warrantyExpiresAt: futureDate(30),
       },
       {
         serviceOrderId: order.id,
@@ -440,6 +451,45 @@ async function main() {
     },
   });
 
+  console.log("Seed: PDV e notificações...");
+  const bobinaPart = await prisma.inventoryPart.findUnique({ where: { sku: "IGN-BOBINA" } });
+  const counterSaleReceivable = await prisma.accountReceivable.create({
+    data: {
+      description: "Venda de balcão PDV-2026-00001",
+      category: "PDV",
+      amount: 145,
+      dueDate: atToday(14, 0),
+      status: "RECEIVED",
+      receivedAt: atToday(14, 0),
+      receivedAmount: 145,
+      bankAccountId: mainAccount.id,
+      paymentMethod: "PIX",
+    },
+  });
+  await prisma.counterSale.create({
+    data: {
+      code: "PDV-2026-00001",
+      customerName: "Cliente balcão",
+      paymentMethod: "PIX",
+      bankAccountId: mainAccount.id,
+      accountReceivableId: counterSaleReceivable.id,
+      totalAmount: 145,
+      items: { create: [{ inventoryPartId: bobinaPart!.id, quantity: 1, unitPrice: 145 }] },
+    },
+  });
+  await prisma.inventoryPart.update({ where: { id: bobinaPart!.id }, data: { stockQty: { decrement: 1 } } });
+
+  await prisma.notificationLog.create({
+    data: {
+      channel: "WHATSAPP",
+      to: customer.phone ?? "+55 11 90000-0000",
+      message: `Olá ${customer.name.split(" ")[0]}, a reparação do seu veículo está em andamento. (OS ${order.code})`,
+      status: "SENT",
+      serviceOrderId: order.id,
+      provider: "MOCK",
+    },
+  });
+
   console.log("Seed concluído:");
   console.log(`  Cliente: cliente@box.demo / cliente123 (com ordem em andamento)`);
   console.log(`  Cliente: cliente2@box.demo / cliente123 (sem ordens — testa "solicitar orçamento")`);
@@ -460,6 +510,12 @@ function atToday(hour: number, minute: number) {
 function futureDate(daysAhead: number) {
   const d = new Date();
   d.setDate(d.getDate() + daysAhead);
+  return d;
+}
+
+function monthsAgo(months: number) {
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
   return d;
 }
 

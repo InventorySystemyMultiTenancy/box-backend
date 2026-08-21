@@ -22,6 +22,10 @@ import { baysRouter } from "@/routes/bays.routes";
 import { appointmentsRouter } from "@/routes/appointments.routes";
 import { clientsRouter } from "@/routes/clients.routes";
 import { rolesRouter, permissionsRouter } from "@/routes/roles.routes";
+import { counterSalesRouter } from "@/routes/counter-sales.routes";
+import { reportsRouter } from "@/routes/reports.routes";
+import { partWarrantyRouter, warrantiesReportRouter } from "@/routes/warranties.routes";
+import { notificationsRouter, orderNotifyRouter } from "@/routes/notifications.routes";
 
 export const app = express();
 
@@ -34,8 +38,10 @@ app.get("/health", (_req, res) => res.json({ ok: true, service: "box-backend" })
 app.use("/api/auth", authRouter);
 app.use("/api/vehicles", vehiclesRouter);
 app.use("/api/service-orders", serviceOrdersRouter);
+app.use("/api/service-orders/:id", orderNotifyRouter);
 app.use("/api/service-orders/:orderId/timeline", timelineRouter);
 app.use("/api/service-orders/:orderId/parts", partsRouter);
+app.use("/api/service-orders/:orderId/parts", partWarrantyRouter);
 app.use("/api/service-orders/:orderId/approvals", approvalsRouter);
 app.use("/api/service-orders/:orderId/chat", chatRouter);
 app.use("/api/uploads", uploadsRouter);
@@ -53,5 +59,9 @@ app.use("/api/agenda/appointments", appointmentsRouter);
 app.use("/api/clients", clientsRouter);
 app.use("/api/roles", rolesRouter);
 app.use("/api/permissions", permissionsRouter);
+app.use("/api/counter-sales", counterSalesRouter);
+app.use("/api/reports", reportsRouter);
+app.use("/api/warranties", warrantiesReportRouter);
+app.use("/api/notifications", notificationsRouter);
 
 app.use((_req, res) => res.status(404).json({ error: "Rota não encontrada." }));

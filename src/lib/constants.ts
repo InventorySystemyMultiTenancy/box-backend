@@ -87,6 +87,15 @@ export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];
 export const BAY_TYPES = ["BAY", "LIFT"] as const;
 export type BayType = (typeof BAY_TYPES)[number];
 
+export const COUNTER_SALE_STATUSES = ["COMPLETED", "CANCELLED"] as const;
+export type CounterSaleStatus = (typeof COUNTER_SALE_STATUSES)[number];
+
+export const NOTIFICATION_CHANNELS = ["SMS", "WHATSAPP"] as const;
+export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
+
+// Meses sem serviço a partir dos quais um veículo é sinalizado para revisão preventiva.
+export const REVISION_ALERT_MONTHS = 6;
+
 export const APPOINTMENT_STATUSES = [
   "SCHEDULED",
   "CONFIRMED",

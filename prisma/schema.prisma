@@ -48,8 +48,9 @@ model BankAccount {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  payables    AccountPayable[]
-  receivables AccountReceivable[]
+  payables     AccountPayable[]
+  receivables  AccountReceivable[]
+  counterSales CounterSale[]
 }
 
 // Conta a pagar (fornecedor, boleto, despesa fixa...). Parcelas de uma mesma
@@ -104,7 +105,8 @@ model AccountReceivable {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  invoices Invoice[]
+  invoices     Invoice[]
+  counterSale  CounterSale?
 }
 
 // Nota fiscal (NF-e/NFS-e/NFC-e). `provider` identifica o gateway usado para emissão
@@ -132,6 +134,53 @@ model Invoice {
   errorMessage        String?
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
+}
+
+// Venda de balcão (PDV) — venda avulsa de peças sem OS vinculada, paga na hora.
+// Ao completar, decrementa estoque e gera uma AccountReceivable já como RECEIVED.
+model CounterSale {
+  id                  String              @id @default(cuid())
+  code                String              @unique // ex: PDV-2026-00001
+  clientId            String?
+  client              Client?             @relation(fields: [clientId], references: [id])
+  customerName        String? // venda sem cadastro de cliente
+  status              String              @default("COMPLETED") // COMPLETED | CANCELLED
+  paymentMethod       String?
+  bankAccountId       String?
+  bankAccount         BankAccount?        @relation(fields: [bankAccountId], references: [id])
+  accountReceivableId String?             @unique
+  accountReceivable   AccountReceivable?  @relation(fields: [accountReceivableId], references: [id])
+  totalAmount         Float
+  createdAt           DateTime            @default(now())
+  cancelledAt         DateTime?
+
+  items CounterSaleItem[]
+}
+
+model CounterSaleItem {
+  id              String        @id @default(cuid())
+  counterSaleId   String
+  counterSale     CounterSale   @relation(fields: [counterSaleId], references: [id], onDelete: Cascade)
+  inventoryPartId String
+  inventoryPart   InventoryPart @relation(fields: [inventoryPartId], references: [id])
+  quantity        Int
+  unitPrice       Float
+}
+
+// Log de notificações externas (SMS/WhatsApp) — auditável mesmo com o MockNotificationProvider,
+// que só grava o log sem enviar de fato (trocar por um provider real como Twilio/Zenvia
+// implementando a mesma interface em src/services/notifications/notification-provider.ts).
+model NotificationLog {
+  id             String        @id @default(cuid())
+  channel        String        // SMS | WHATSAPP
+  to             String
+  message        String
+  status         String        @default("SENT") // SENT | FAILED
+  errorMessage   String?
+  serviceOrderId String?
+  serviceOrder   ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
+  provider       String        @default("MOCK")
+  createdAt      DateTime      @default(now())
 }
 
 // Fornecedor — origem dos pedidos de compra e, opcionalmente, fornecedor preferencial
@@ -297,6 +346,7 @@ model Client {
   accountsReceivable AccountReceivable[]
   invoices           Invoice[]
   appointments       Appointment[]
+  counterSales       CounterSale[]
 }
 
 model InventoryPart {
@@ -320,6 +370,7 @@ model InventoryPart {
   usages          ProblemPartUsage[]
   financialEntries FinancialEntry[]
   purchaseOrderItems PurchaseOrderItem[]
+  counterSaleItems   CounterSaleItem[]
 }
 
 model Vehicle {
@@ -366,6 +417,7 @@ model ServiceOrder {
   accountsReceivable AccountReceivable[]
   invoices           Invoice[]
   appointments       Appointment[]
+  notifications      NotificationLog[]
 }
 
 // Pedido de orçamento feito pelo cliente antes de existir uma ordem de serviço.
@@ -419,7 +471,12 @@ model VehiclePart {
   wearLevel      Int?         // 0-100
   responsibleId  String?
   responsible    User?        @relation("PartResponsible", fields: [responsibleId], references: [id])
-  warranty       String?
+  warranty       String?      // texto livre (legado, exibido ao cliente)
+  // Garantia estruturada — expiresAt é calculado (now + months) no momento em que a
+  // garantia é registrada, para permitir consultas de "garantias vencendo" sem recalcular.
+  warrantyMonths   Int?
+  warrantyStartAt  DateTime?
+  warrantyExpiresAt DateTime?
   updatedAt      DateTime     @updatedAt
   createdAt      DateTime     @default(now())
 

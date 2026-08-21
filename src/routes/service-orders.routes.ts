@@ -7,6 +7,7 @@ import { emitToOrder } from "@/sockets";
 import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
 import { upload, persistUploadedFile } from "@/middleware/upload";
+import { notifyServiceOrderStatus } from "@/services/notifications.service";
 
 export const serviceOrdersRouter = Router();
 
@@ -122,6 +123,7 @@ serviceOrdersRouter.patch(
     });
 
     emitToOrder(order.id, "status:update", { orderId: order.id, status: order.status, progress: order.progress });
+    notifyServiceOrderStatus(order.id).catch(() => {});
     res.json({ order });
   }
 );
@@ -215,6 +217,7 @@ serviceOrdersRouter.patch(
     });
 
     emitToOrder(order!.id, "status:update", { orderId: order!.id, status: order!.status, progress: order!.progress });
+    notifyServiceOrderStatus(order!.id).catch(() => {});
     res.json({ order });
   }
 );

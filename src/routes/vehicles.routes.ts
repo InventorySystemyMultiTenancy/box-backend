@@ -1,9 +1,16 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { requireAuth, AuthedRequest } from "@/middleware/auth";
+import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
+import { getVehicleHistory, listRevisionAlerts, VehicleHistoryError } from "@/services/vehicle-history.service";
 
 export const vehiclesRouter = Router();
+
+// Rotas estáticas antes de "/:id" para não colidir com o param.
+vehiclesRouter.get("/revision-alerts", requireAuth, requireRole("MECHANIC", "ADMIN"), async (_req, res) => {
+  const alerts = await listRevisionAlerts();
+  res.json({ alerts });
+});
 
 vehiclesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const isStaff = req.user!.role === "MECHANIC" || req.user!.role === "ADMIN";
@@ -43,4 +50,22 @@ vehiclesRouter.get("/:id", requireAuth, async (req: AuthedRequest<{ id: string }
     return res.status(403).json({ error: "Este veículo não pertence a você." });
   }
   res.json({ vehicle });
+});
+
+vehiclesRouter.get("/:id/history", requireAuth, async (req: AuthedRequest<{ id: string }>, res) => {
+  const isStaff = req.user!.role === "MECHANIC" || req.user!.role === "ADMIN";
+  if (!isStaff) {
+    const vehicle = await prisma.vehicle.findUnique({ where: { id: req.params.id } });
+    if (!vehicle || vehicle.ownerId !== req.user!.id) {
+      return res.status(403).json({ error: "Este veículo não pertence a você." });
+    }
+  }
+
+  try {
+    const history = await getVehicleHistory(req.params.id);
+    res.json({ history });
+  } catch (err) {
+    if (err instanceof VehicleHistoryError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
 });
