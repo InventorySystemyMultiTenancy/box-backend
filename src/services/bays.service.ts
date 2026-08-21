@@ -9,10 +9,11 @@ export class BayError extends Error {
 export interface BayInput {
   name: string;
   type?: "BAY" | "LIFT";
+  storeId?: string;
 }
 
-export async function listBays() {
-  return prisma.bay.findMany({ where: { active: true }, orderBy: { name: "asc" } });
+export async function listBays(storeId?: string) {
+  return prisma.bay.findMany({ where: { active: true, ...(storeId ? { storeId } : {}) }, orderBy: { name: "asc" } });
 }
 
 export async function createBay(input: BayInput) {

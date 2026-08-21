@@ -37,11 +37,12 @@ authRouter.post("/register", async (req, res) => {
 const staffCreateUserSchema = registerSchema.extend({
   role: z.enum(["CUSTOMER", "MECHANIC", "ADMIN"]),
   roleId: z.string().optional(),
+  commissionRate: z.number().min(0).max(1).optional(),
 });
 
 authRouter.get("/users", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   const users = await prisma.user.findMany({
-    select: { id: true, name: true, email: true, role: true, phone: true, createdAt: true },
+    select: { id: true, name: true, email: true, role: true, phone: true, commissionRate: true, createdAt: true },
     orderBy: { createdAt: "desc" },
   });
   res.json({ users });
@@ -52,14 +53,14 @@ authRouter.post("/users", requireAuth, requireRole("ADMIN"), async (req, res) =>
   if (!parsed.success) {
     return res.status(400).json({ error: "Dados invÃ¡lidos.", details: parsed.error.flatten() });
   }
-  const { name, email, password, role, roleId, phone } = parsed.data;
+  const { name, email, password, role, roleId, phone, commissionRate } = parsed.data;
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) return res.status(409).json({ error: "Este e-mail já está cadastrado." });
 
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { name, email, passwordHash, role, roleId, phone },
+    data: { name, email, passwordHash, role, roleId, phone, commissionRate },
   });
 
   res.status(201).json({ user: toPublicUser(user) });
@@ -72,6 +73,7 @@ const updateUserSchema = z.object({
   role: z.enum(["CUSTOMER", "MECHANIC", "ADMIN"]).optional(),
   roleId: z.string().nullable().optional(),
   password: z.string().min(6).optional(),
+  commissionRate: z.number().min(0).max(1).nullable().optional(),
 });
 
 authRouter.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
@@ -87,6 +89,7 @@ authRouter.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req: Au
       phone: parsed.data.phone,
       role: parsed.data.role,
       roleId: parsed.data.roleId,
+      commissionRate: parsed.data.commissionRate,
       ...(passwordHash ? { passwordHash } : {}),
     },
   });
@@ -125,6 +128,14 @@ authRouter.get("/me/permissions", requireAuth, async (req: AuthedRequest, res) =
   res.json({ permissions: Array.from(effective) });
 });
 
-function toPublicUser(user: { id: string; name: string; email: string; role: string; roleId?: string | null; phone: string | null }) {
-  return { id: user.id, name: user.name, email: user.email, role: user.role, roleId: user.roleId ?? null, phone: user.phone };
+function toPublicUser(user: { id: string; name: string; email: string; role: string; roleId?: string | null; phone: string | null; commissionRate?: number | null }) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    roleId: user.roleId ?? null,
+    phone: user.phone,
+    commissionRate: user.commissionRate ?? null,
+  };
 }

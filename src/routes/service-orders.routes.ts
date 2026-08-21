@@ -7,7 +7,6 @@ import { emitToOrder } from "@/sockets";
 import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
 import { upload, persistUploadedFile } from "@/middleware/upload";
-import { notifyServiceOrderStatus } from "@/services/notifications.service";
 
 export const serviceOrdersRouter = Router();
 
@@ -48,8 +47,9 @@ function hidePricesForMechanic<T extends { approvals?: any[]; estimatedMin?: num
 
 serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const isStaff = req.user!.role === "MECHANIC" || req.user!.role === "ADMIN";
+  const storeId = typeof req.query.storeId === "string" ? req.query.storeId : undefined;
   const orders = await prisma.serviceOrder.findMany({
-    where: isStaff ? {} : { vehicle: { ownerId: req.user!.id } },
+    where: { ...(isStaff ? {} : { vehicle: { ownerId: req.user!.id } }), ...(storeId ? { storeId } : {}) },
     include: orderInclude,
     orderBy: { createdAt: "desc" },
   });
@@ -61,6 +61,7 @@ const createOrderSchema = z.object({
   estimatedMin: z.number().optional(),
   estimatedMax: z.number().optional(),
   scheduledAt: z.string().datetime().optional(),
+  storeId: z.string().optional(),
 });
 
 serviceOrdersRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
@@ -75,6 +76,7 @@ serviceOrdersRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), asy
       estimatedMin: parsed.data.estimatedMin,
       estimatedMax: parsed.data.estimatedMax,
       scheduledAt: parsed.data.scheduledAt ? new Date(parsed.data.scheduledAt) : undefined,
+      storeId: parsed.data.storeId,
       status: "RECEIVED",
       progress: STATUS_PROGRESS.RECEIVED,
       timelineEvents: {
@@ -123,7 +125,6 @@ serviceOrdersRouter.patch(
     });
 
     emitToOrder(order.id, "status:update", { orderId: order.id, status: order.status, progress: order.progress });
-    notifyServiceOrderStatus(order.id).catch(() => {});
     res.json({ order });
   }
 );
@@ -217,7 +218,6 @@ serviceOrdersRouter.patch(
     });
 
     emitToOrder(order!.id, "status:update", { orderId: order!.id, status: order!.status, progress: order!.progress });
-    notifyServiceOrderStatus(order!.id).catch(() => {});
     res.json({ order });
   }
 );

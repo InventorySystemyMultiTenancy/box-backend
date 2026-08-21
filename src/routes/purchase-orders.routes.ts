@@ -24,6 +24,7 @@ const itemSchema = z.object({
 
 const createSchema = z.object({
   supplierId: z.string(),
+  storeId: z.string().optional(),
   expectedDate: z.string().optional(),
   notes: z.string().optional(),
   items: z.array(itemSchema).min(1),

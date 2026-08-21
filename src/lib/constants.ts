@@ -96,6 +96,9 @@ export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
 // Meses sem serviço a partir dos quais um veículo é sinalizado para revisão preventiva.
 export const REVISION_ALERT_MONTHS = 6;
 
+export const COMMISSION_STATUSES = ["PENDING", "PAID", "CANCELLED"] as const;
+export type CommissionStatus = (typeof COMMISSION_STATUSES)[number];
+
 export const APPOINTMENT_STATUSES = [
   "SCHEDULED",
   "CONFIRMED",

@@ -1,7 +1,9 @@
+import fs from "fs";
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth, AuthedRequest } from "@/middleware/auth";
 import { requirePermission } from "@/middleware/permissions";
+import { upload } from "@/middleware/upload";
 import {
   listInvoices,
   createInvoiceDraft,
@@ -9,8 +11,29 @@ import {
   cancelInvoice,
   InvoiceError,
 } from "@/services/invoices.service";
+import { extractInvoiceFromImage, InvoiceOcrError } from "@/services/fiscal/invoice-ocr.service";
 
 export const invoicesRouter = Router();
+
+invoicesRouter.post(
+  "/extract",
+  requireAuth,
+  requirePermission("invoices", "manage"),
+  upload.single("photo"),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "Envie uma imagem da nota fiscal." });
+
+    try {
+      const extracted = await extractInvoiceFromImage(req.file.path, req.file.mimetype);
+      res.json({ extracted });
+    } catch (err) {
+      if (err instanceof InvoiceOcrError) return res.status(err.status).json({ error: err.message });
+      throw err;
+    } finally {
+      fs.promises.unlink(req.file.path).catch(() => {});
+    }
+  }
+);
 
 const createSchema = z.object({
   type: z.enum(["NFE", "NFSE", "NFCE"]),

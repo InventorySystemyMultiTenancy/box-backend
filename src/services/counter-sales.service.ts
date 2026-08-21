@@ -19,6 +19,7 @@ export interface CounterSaleInput {
   customerName?: string;
   paymentMethod?: string;
   bankAccountId?: string;
+  storeId?: string;
   items: CounterSaleItemInput[];
 }
 
@@ -31,8 +32,9 @@ const include = {
 export async function listCounterSales(query: Record<string, unknown>) {
   const pageParams = parsePageParams(query);
   const status = typeof query.status === "string" ? query.status : undefined;
+  const storeId = typeof query.storeId === "string" ? query.storeId : undefined;
 
-  const where = { ...(status ? { status } : {}) };
+  const where = { ...(status ? { status } : {}), ...(storeId ? { storeId } : {}) };
 
   const [items, total] = await Promise.all([
     prisma.counterSale.findMany({ where, include, orderBy: { createdAt: "desc" }, skip: pageParams.skip, take: pageParams.take }),
@@ -87,6 +89,7 @@ export async function createCounterSale(input: CounterSaleInput) {
         customerName: input.customerName,
         paymentMethod: input.paymentMethod,
         bankAccountId: input.bankAccountId,
+        storeId: input.storeId,
         accountReceivableId: receivable.id,
         totalAmount,
         items: { create: input.items },

@@ -16,6 +16,7 @@ export interface PurchaseOrderItemInput {
 
 export interface PurchaseOrderInput {
   supplierId: string;
+  storeId?: string;
   expectedDate?: string;
   notes?: string;
   items: PurchaseOrderItemInput[];
@@ -25,10 +26,12 @@ export async function listPurchaseOrders(query: Record<string, unknown>) {
   const pageParams = parsePageParams(query);
   const status = typeof query.status === "string" ? query.status : undefined;
   const supplierId = typeof query.supplierId === "string" ? query.supplierId : undefined;
+  const storeId = typeof query.storeId === "string" ? query.storeId : undefined;
 
   const where = {
     ...(status ? { status } : {}),
     ...(supplierId ? { supplierId } : {}),
+    ...(storeId ? { storeId } : {}),
   };
 
   const [items, total] = await Promise.all([
@@ -62,6 +65,7 @@ export async function createPurchaseOrder(input: PurchaseOrderInput) {
     data: {
       code,
       supplierId: input.supplierId,
+      storeId: input.storeId,
       expectedDate: input.expectedDate ? new Date(input.expectedDate) : undefined,
       notes: input.notes,
       items: { create: input.items },

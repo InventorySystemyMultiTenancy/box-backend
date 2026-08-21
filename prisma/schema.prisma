@@ -18,6 +18,9 @@ model User {
   passwordHash String
   role         String   @default("CUSTOMER") // CUSTOMER | MECHANIC | ADMIN
   phone        String?
+  // Percentual de comissão (0.10 = 10%) — só relevante para MECHANIC. Snapshot em
+  // Commission.rate no momento da geração, então mudar aqui não afeta comissões já geradas.
+  commissionRate Float?
   createdAt    DateTime @default(now())
 
   // Cargo (Role) — granularidade fina de permissões, além do `role` acima que
@@ -33,6 +36,48 @@ model User {
   quoteRequestsAsMechanic QuoteRequest[] @relation("QuoteRequestMechanic")
   client                Client?
   appointmentsAsMechanic Appointment[]  @relation("AppointmentMechanic")
+  commissions            Commission[]   @relation("MechanicCommissions")
+}
+
+// Comissão de mecânico sobre um reparo aprovado — uma por Approval (evita duplicar
+// se o job de geração rodar de novo sobre o mesmo período). Vira AccountPayable ao ser paga.
+model Commission {
+  id               String          @id @default(cuid())
+  mechanicId       String
+  mechanic         User            @relation("MechanicCommissions", fields: [mechanicId], references: [id])
+  approvalId       String          @unique
+  approval         Approval        @relation(fields: [approvalId], references: [id])
+  serviceOrderId   String
+  serviceOrder     ServiceOrder    @relation(fields: [serviceOrderId], references: [id])
+  baseAmount       Float
+  rate             Float
+  amount           Float
+  status           String          @default("PENDING") // PENDING | PAID | CANCELLED
+  paidAt           DateTime?
+  accountPayableId String?         @unique
+  accountPayable   AccountPayable? @relation(fields: [accountPayableId], references: [id])
+  createdAt        DateTime        @default(now())
+}
+
+// Unidade/filial — presença opcional (storeId nullable) nos modelos operacionais para
+// não quebrar instalações de loja única existentes. Client/Vehicle/User continuam globais
+// (CRM e login compartilhados entre lojas); atribuição de funcionário por loja fica fora
+// deste escopo inicial.
+model Store {
+  id          String   @id @default(cuid())
+  name        String
+  addressLine String?
+  city        String?
+  state       String?
+  phone       String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  inventoryParts InventoryPart[]
+  serviceOrders  ServiceOrder[]
+  bays           Bay[]
+  purchaseOrders PurchaseOrder[]
+  counterSales   CounterSale[]
 }
 
 // Conta bancária/caixa da oficina — origem/destino de contas a pagar e a receber,
@@ -79,6 +124,8 @@ model AccountPayable {
   notes             String?
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
+
+  commission Commission?
 }
 
 // Conta a receber — pode ou não estar ligada a uma OS/cliente (ex: venda de balcão avulsa).
@@ -141,6 +188,8 @@ model Invoice {
 model CounterSale {
   id                  String              @id @default(cuid())
   code                String              @unique // ex: PDV-2026-00001
+  storeId             String?
+  store               Store?              @relation(fields: [storeId], references: [id])
   clientId            String?
   client              Client?             @relation(fields: [clientId], references: [id])
   customerName        String? // venda sem cadastro de cliente
@@ -165,22 +214,6 @@ model CounterSaleItem {
   inventoryPart   InventoryPart @relation(fields: [inventoryPartId], references: [id])
   quantity        Int
   unitPrice       Float
-}
-
-// Log de notificações externas (SMS/WhatsApp) — auditável mesmo com o MockNotificationProvider,
-// que só grava o log sem enviar de fato (trocar por um provider real como Twilio/Zenvia
-// implementando a mesma interface em src/services/notifications/notification-provider.ts).
-model NotificationLog {
-  id             String        @id @default(cuid())
-  channel        String        // SMS | WHATSAPP
-  to             String
-  message        String
-  status         String        @default("SENT") // SENT | FAILED
-  errorMessage   String?
-  serviceOrderId String?
-  serviceOrder   ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
-  provider       String        @default("MOCK")
-  createdAt      DateTime      @default(now())
 }
 
 // Fornecedor — origem dos pedidos de compra e, opcionalmente, fornecedor preferencial
@@ -211,6 +244,8 @@ model Supplier {
 model PurchaseOrder {
   id           String    @id @default(cuid())
   code         String    @unique // ex: PC-2026-00001
+  storeId      String?
+  store        Store?    @relation(fields: [storeId], references: [id])
   supplierId   String
   supplier     Supplier  @relation(fields: [supplierId], references: [id])
   status       String    @default("DRAFT") // DRAFT | SENT | PARTIALLY_RECEIVED | RECEIVED | CANCELLED
@@ -238,6 +273,8 @@ model PurchaseOrderItem {
 // Box/elevador físico da oficina — usado para visualizar ocupação na agenda.
 model Bay {
   id        String   @id @default(cuid())
+  storeId   String?
+  store     Store?   @relation(fields: [storeId], references: [id])
   name      String
   type      String   @default("BAY") // BAY | LIFT
   active    Boolean  @default(true)
@@ -351,6 +388,8 @@ model Client {
 
 model InventoryPart {
   id          String   @id @default(cuid())
+  storeId     String?
+  store       Store?   @relation(fields: [storeId], references: [id])
   name        String
   sku         String?  @unique
   description String?
@@ -393,6 +432,8 @@ model Vehicle {
 model ServiceOrder {
   id            String    @id @default(cuid())
   code          String    @unique // ex: OS-2026-04471
+  storeId       String?
+  store         Store?    @relation(fields: [storeId], references: [id])
   vehicleId     String
   vehicle       Vehicle   @relation(fields: [vehicleId], references: [id])
   status        String    @default("RECEIVED")
@@ -417,7 +458,7 @@ model ServiceOrder {
   accountsReceivable AccountReceivable[]
   invoices           Invoice[]
   appointments       Appointment[]
-  notifications      NotificationLog[]
+  commissions        Commission[]
 }
 
 // Pedido de orçamento feito pelo cliente antes de existir uma ordem de serviço.
@@ -509,6 +550,7 @@ model Approval {
   media      Media[]
   partUsages ProblemPartUsage[]
   financialEntries FinancialEntry[]
+  commission Commission?
 }
 
 model ProblemPartUsage {

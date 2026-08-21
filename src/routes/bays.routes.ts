@@ -9,10 +9,12 @@ export const baysRouter = Router();
 const baySchema = z.object({
   name: z.string().min(1),
   type: z.enum(["BAY", "LIFT"]).optional(),
+  storeId: z.string().optional(),
 });
 
-baysRouter.get("/", requireAuth, requirePermission("agenda", "view"), async (_req, res) => {
-  const bays = await listBays();
+baysRouter.get("/", requireAuth, requirePermission("agenda", "view"), async (req, res) => {
+  const storeId = typeof req.query.storeId === "string" ? req.query.storeId : undefined;
+  const bays = await listBays(storeId);
   res.json({ bays });
 });
 

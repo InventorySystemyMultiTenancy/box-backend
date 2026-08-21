@@ -15,11 +15,13 @@ const partSchema = z.object({
   minStockQty: z.coerce.number().int().min(0).optional(),
   reorderQty: z.coerce.number().int().min(0).optional(),
   preferredSupplierId: z.string().optional(),
+  storeId: z.string().optional(),
   active: z.coerce.boolean().optional(),
 });
 
 inventoryPartsRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
-  const parts = await prisma.inventoryPart.findMany({ orderBy: { name: "asc" } });
+  const storeId = typeof req.query.storeId === "string" ? req.query.storeId : undefined;
+  const parts = await prisma.inventoryPart.findMany({ where: { ...(storeId ? { storeId } : {}) }, orderBy: { name: "asc" } });
   if (req.user!.role === "MECHANIC") {
     return res.json({ parts: parts.map((part) => ({ ...part, unitCost: null })) });
   }
@@ -36,6 +38,7 @@ inventoryPartsRouter.post("/", requireAuth, requireRole("ADMIN"), upload.single(
       ...parsed.data,
       sku: parsed.data.sku || undefined,
       preferredSupplierId: parsed.data.preferredSupplierId || undefined,
+      storeId: parsed.data.storeId || undefined,
       photoUrl,
       active: parsed.data.active ?? true,
     },
@@ -54,6 +57,7 @@ inventoryPartsRouter.patch("/:id", requireAuth, requireRole("ADMIN"), upload.sin
       ...parsed.data,
       sku: parsed.data.sku || undefined,
       preferredSupplierId: parsed.data.preferredSupplierId || undefined,
+      storeId: parsed.data.storeId || undefined,
       ...(photoUrl ? { photoUrl } : {}),
     },
   });

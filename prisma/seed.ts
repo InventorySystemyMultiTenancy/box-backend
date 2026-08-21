@@ -1,3 +1,4 @@
+import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 
@@ -6,7 +7,8 @@ import { prisma } from "@/lib/prisma";
 // nascer demonstrável, sem tela vazia.
 async function main() {
   console.log("Seed: limpando dados existentes...");
-  await prisma.notificationLog.deleteMany();
+  await prisma.commission.deleteMany();
+  await prisma.store.deleteMany();
   await prisma.appointment.deleteMany();
   await prisma.bay.deleteMany();
   await prisma.counterSale.deleteMany();
@@ -58,6 +60,10 @@ async function main() {
     { resource: "reports", action: "view" },
     { resource: "warranties", action: "view" },
     { resource: "warranties", action: "manage" },
+    { resource: "commissions", action: "view" },
+    { resource: "commissions", action: "manage" },
+    { resource: "stores", action: "view" },
+    { resource: "stores", action: "manage" },
   ];
   const permissions = await Promise.all(
     permissionsCatalog.map((p) => prisma.permission.create({ data: p }))
@@ -104,6 +110,7 @@ async function main() {
       passwordHash: mechanicPassword,
       role: "MECHANIC",
       roleId: mechanicRole.id,
+      commissionRate: 0.1,
     },
   });
 
@@ -451,7 +458,7 @@ async function main() {
     },
   });
 
-  console.log("Seed: PDV e notificações...");
+  console.log("Seed: PDV...");
   const bobinaPart = await prisma.inventoryPart.findUnique({ where: { sku: "IGN-BOBINA" } });
   const counterSaleReceivable = await prisma.accountReceivable.create({
     data: {
@@ -479,14 +486,31 @@ async function main() {
   });
   await prisma.inventoryPart.update({ where: { id: bobinaPart!.id }, data: { stockQty: { decrement: 1 } } });
 
-  await prisma.notificationLog.create({
+  console.log("Seed: lojas e comissões...");
+  await prisma.store.create({
+    data: { name: "Loja Principal", city: "São Paulo", state: "SP", phone: "+55 11 4000-1000" },
+  });
+
+  const demoApproval = await prisma.approval.create({
     data: {
-      channel: "WHATSAPP",
-      to: customer.phone ?? "+55 11 90000-0000",
-      message: `Olá ${customer.name.split(" ")[0]}, a reparação do seu veículo está em andamento. (OS ${order.code})`,
-      status: "SENT",
       serviceOrderId: order.id,
-      provider: "MOCK",
+      partId: freios.id,
+      title: "Troca de amortecedor (demo comissão)",
+      description: "Serviço já concluído e aprovado — usado para demonstrar a geração de comissão.",
+      estimatedValue: 350,
+      status: "APPROVED",
+      respondedAt: atToday(12, 0),
+    },
+  });
+  await prisma.commission.create({
+    data: {
+      mechanicId: mechanic.id,
+      approvalId: demoApproval.id,
+      serviceOrderId: order.id,
+      baseAmount: 350,
+      rate: 0.1,
+      amount: 35,
+      status: "PENDING",
     },
   });
 

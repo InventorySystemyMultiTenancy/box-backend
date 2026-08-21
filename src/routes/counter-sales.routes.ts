@@ -17,6 +17,7 @@ const createSchema = z.object({
   customerName: z.string().optional(),
   paymentMethod: z.string().optional(),
   bankAccountId: z.string().optional(),
+  storeId: z.string().optional(),
   items: z.array(itemSchema).min(1),
 });
 
