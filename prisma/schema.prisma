@@ -32,6 +32,192 @@ model User {
   quoteRequestsAsCustomer QuoteRequest[] @relation("QuoteRequestCustomer")
   quoteRequestsAsMechanic QuoteRequest[] @relation("QuoteRequestMechanic")
   client                Client?
+  appointmentsAsMechanic Appointment[]  @relation("AppointmentMechanic")
+}
+
+// Conta bancária/caixa da oficina — origem/destino de contas a pagar e a receber,
+// usada para calcular saldo (initialBalance + recebido - pago) e o fluxo de caixa.
+model BankAccount {
+  id             String   @id @default(cuid())
+  name           String
+  bank           String?
+  agency         String?
+  accountNumber  String?
+  initialBalance Float    @default(0)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  payables    AccountPayable[]
+  receivables AccountReceivable[]
+}
+
+// Conta a pagar (fornecedor, boleto, despesa fixa...). Parcelas de uma mesma
+// compra compartilham `groupId` e têm installmentNumber/installmentTotal preenchidos.
+model AccountPayable {
+  id                String       @id @default(cuid())
+  description       String
+  category          String
+  payeeName         String
+  amount            Float
+  dueDate           DateTime
+  paidAt            DateTime?
+  paidAmount        Float?
+  status            String       @default("PENDING") // PENDING | PAID | OVERDUE | CANCELLED
+  paymentMethod     String?
+  bankAccountId     String?
+  bankAccount       BankAccount? @relation(fields: [bankAccountId], references: [id])
+  // Preenchido quando esta conta foi gerada automaticamente ao enviar um pedido de compra.
+  purchaseOrderId   String?
+  purchaseOrder     PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  supplierId        String?
+  supplier          Supplier?    @relation(fields: [supplierId], references: [id])
+  installmentNumber Int?
+  installmentTotal  Int?
+  groupId           String?
+  notes             String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+}
+
+// Conta a receber — pode ou não estar ligada a uma OS/cliente (ex: venda de balcão avulsa).
+model AccountReceivable {
+  id                String        @id @default(cuid())
+  description       String
+  category          String
+  clientId          String?
+  client            Client?       @relation(fields: [clientId], references: [id])
+  serviceOrderId    String?
+  serviceOrder      ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
+  amount            Float
+  dueDate           DateTime
+  receivedAt        DateTime?
+  receivedAmount    Float?
+  status            String        @default("PENDING") // PENDING | RECEIVED | OVERDUE | CANCELLED
+  paymentMethod     String?
+  bankAccountId     String?
+  bankAccount       BankAccount?  @relation(fields: [bankAccountId], references: [id])
+  installmentNumber Int?
+  installmentTotal  Int?
+  groupId           String?
+  notes             String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  invoices Invoice[]
+}
+
+// Nota fiscal (NF-e/NFS-e/NFC-e). `provider` identifica o gateway usado para emissão
+// (MOCK em dev/sem contrato fiscal — trocar por um provider real como eNotas/Focus NFe
+// implementando a mesma interface em src/services/fiscal/nfe-provider.ts).
+model Invoice {
+  id                  String              @id @default(cuid())
+  type                String              // NFE | NFSE | NFCE
+  status              String              @default("DRAFT") // DRAFT | PENDING | ISSUED | CANCELLED | ERROR
+  number              String?
+  series              String?
+  provider            String              @default("MOCK")
+  providerRef         String?
+  serviceOrderId      String?
+  serviceOrder        ServiceOrder?       @relation(fields: [serviceOrderId], references: [id])
+  clientId            String?
+  client              Client?             @relation(fields: [clientId], references: [id])
+  accountReceivableId String?
+  accountReceivable   AccountReceivable?  @relation(fields: [accountReceivableId], references: [id])
+  totalAmount         Float
+  issueDate           DateTime?
+  cancelledAt         DateTime?
+  xmlUrl              String?
+  pdfUrl              String?
+  errorMessage        String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+}
+
+// Fornecedor — origem dos pedidos de compra e, opcionalmente, fornecedor preferencial
+// de uma peça de estoque (usado para agrupar sugestões de reposição por fornecedor).
+model Supplier {
+  id          String   @id @default(cuid())
+  name        String
+  cpfCnpj     String?
+  contactName String?
+  phone       String?
+  whatsapp    String?
+  email       String?
+  addressLine String?
+  city        String?
+  state       String?
+  notes       String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  purchaseOrders   PurchaseOrder[]
+  preferredForParts InventoryPart[]
+  payables         AccountPayable[]
+}
+
+// Pedido de compra a um fornecedor. DRAFT -> SENT (gera automaticamente uma conta a
+// pagar) -> PARTIALLY_RECEIVED/RECEIVED conforme os itens vão sendo recebidos no estoque.
+model PurchaseOrder {
+  id           String    @id @default(cuid())
+  code         String    @unique // ex: PC-2026-00001
+  supplierId   String
+  supplier     Supplier  @relation(fields: [supplierId], references: [id])
+  status       String    @default("DRAFT") // DRAFT | SENT | PARTIALLY_RECEIVED | RECEIVED | CANCELLED
+  notes        String?
+  expectedDate DateTime?
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  items    PurchaseOrderItem[]
+  payables AccountPayable[]
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  inventoryPartId String
+  inventoryPart   InventoryPart @relation(fields: [inventoryPartId], references: [id])
+  quantity        Int
+  unitCost        Float
+  receivedQty     Int           @default(0)
+}
+
+// Box/elevador físico da oficina — usado para visualizar ocupação na agenda.
+model Bay {
+  id        String   @id @default(cuid())
+  name      String
+  type      String   @default("BAY") // BAY | LIFT
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  appointments Appointment[]
+}
+
+// Compromisso na agenda visual — camada de agendamento com box/elevador e mecânico,
+// desacoplada do ciclo de vida da OS (que continua tendo seu próprio `status`/`scheduledAt`).
+model Appointment {
+  id                   String        @id @default(cuid())
+  title                String
+  vehicleId            String?
+  vehicle              Vehicle?      @relation(fields: [vehicleId], references: [id])
+  clientId             String?
+  client               Client?       @relation(fields: [clientId], references: [id])
+  serviceOrderId       String?
+  serviceOrder         ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
+  mechanicId           String?
+  mechanic             User?         @relation("AppointmentMechanic", fields: [mechanicId], references: [id])
+  bayId                String?
+  bay                  Bay?          @relation(fields: [bayId], references: [id])
+  startAt              DateTime
+  estimatedDurationMin Int           @default(60)
+  status               String        @default("SCHEDULED") // SCHEDULED | CONFIRMED | IN_PROGRESS | DONE | CANCELLED | NO_SHOW
+  notes                String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
 }
 
 // Cargo administrável (Mecânico, Financeiro, Gerente...) — não hardcoded.
@@ -107,6 +293,10 @@ model Client {
   active        Boolean   @default(true)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+
+  accountsReceivable AccountReceivable[]
+  invoices           Invoice[]
+  appointments       Appointment[]
 }
 
 model InventoryPart {
@@ -116,6 +306,12 @@ model InventoryPart {
   description String?
   unitCost    Float
   stockQty    Int      @default(0)
+  // Ponto mínimo de estoque e quantidade-alvo ao repor — usados para gerar sugestões
+  // automáticas de compra quando stockQty <= minStockQty.
+  minStockQty Int      @default(0)
+  reorderQty  Int      @default(0)
+  preferredSupplierId String?
+  preferredSupplier   Supplier? @relation(fields: [preferredSupplierId], references: [id])
   photoUrl    String?
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
@@ -123,6 +319,7 @@ model InventoryPart {
 
   usages          ProblemPartUsage[]
   financialEntries FinancialEntry[]
+  purchaseOrderItems PurchaseOrderItem[]
 }
 
 model Vehicle {
@@ -139,6 +336,7 @@ model Vehicle {
 
   serviceOrders ServiceOrder[]
   quoteRequests QuoteRequest[]
+  appointments  Appointment[]
 }
 
 model ServiceOrder {
@@ -165,6 +363,9 @@ model ServiceOrder {
   chatMessages   ChatMessage[]
   quoteRequest   QuoteRequest?
   financialEntries FinancialEntry[]
+  accountsReceivable AccountReceivable[]
+  invoices           Invoice[]
+  appointments       Appointment[]
 }
 
 // Pedido de orçamento feito pelo cliente antes de existir uma ordem de serviço.

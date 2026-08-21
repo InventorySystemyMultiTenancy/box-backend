@@ -59,7 +59,9 @@ src/
   services/             # regra de negócio dos módulos novos (clients, roles/permissions) — módulos
                           # mais antigos ainda têm a lógica direto nas rotas, migração é gradual
   routes/              # auth, vehicles, service-orders, timeline, parts, approvals, chat, uploads,
-                          # quote-requests, inventory-parts, finance, clients, roles
+                          # quote-requests, inventory-parts, finance, bank-accounts, accounts-payable,
+                          # accounts-receivable, invoices (fiscal), suppliers, purchase-orders,
+                          # bays, appointments (agenda), clients, roles
   sockets/              # gateway Socket.io (join-order, emitToOrder)
 prisma/
   schema.prisma
@@ -72,6 +74,47 @@ prisma/
 
 Os 11 status de `ServiceOrder` e os status de `VehiclePart` estão centralizados em
 `src/lib/constants.ts` — é a fonte da verdade que o frontend espelha.
+
+## Financeiro e fiscal
+
+Além dos lançamentos simples (`FinancialEntry`, gerados automaticamente a partir de peças/aprovações),
+o backend tem um módulo de gestão financeira completo:
+
+- **Contas bancárias** (`/api/finance/bank-accounts`) — saldo calculado a partir do saldo inicial +
+  recebido - pago.
+- **Contas a pagar/receber** (`/api/finance/payables`, `/api/finance/receivables`) — com parcelamento
+  (`installments`), baixa (`/pay`, `/receive`) e cancelamento. `/api/finance/receivables/from-service-order`
+  gera uma cobrança a partir do total já aprovado numa OS.
+- **Fluxo de caixa e DRE** (`/api/finance/cash-flow`, `/api/finance/dre`) — agregados por período
+  (`?from=&to=`) a partir do que já foi efetivamente pago/recebido.
+- **Notas fiscais** (`/api/invoices`) — NF-e/NFS-e/NFC-e como rascunho → emitida → cancelada. A emissão
+  passa por um `NFeProvider` (`src/services/fiscal/nfe-provider.ts`); em dev usa `MockNFeProvider`
+  (gera número sequencial local, sem SEFAZ/prefeitura). Trocar por um gateway real (eNotas, Focus NFe...)
+  é implementar essa mesma interface — vai precisar de certificado digital e contrato com o gateway.
+
+Todas as rotas novas exigem permissão granular (`finance.view`/`finance.manage`,
+`invoices.view`/`invoices.manage`), não o `role` legado.
+
+## Compras e fornecedores
+
+- **Fornecedores** (`/api/suppliers`) — cadastro simples (permissões `suppliers.view`/`suppliers.manage`).
+- **Pedidos de compra** (`/api/purchase-orders`) — `DRAFT → SENT → PARTIALLY_RECEIVED/RECEIVED → CANCELLED`.
+  Enviar um pedido (`/:id/send`) gera automaticamente uma `AccountPayable` no valor total dos itens.
+  Receber (`/:id/receive`, parcial ou total) dá entrada no estoque (`InventoryPart.stockQty`).
+- **Reposição por ponto mínimo** — `InventoryPart` tem `minStockQty`/`reorderQty`/`preferredSupplierId`.
+  `GET /api/purchase-orders/replenishment-suggestions` lista peças no ponto mínimo ou abaixo com a
+  quantidade sugerida; `POST /api/purchase-orders/from-suggestions` gera um rascunho de pedido por
+  fornecedor preferencial automaticamente.
+
+## Agenda
+
+- **Boxes/elevadores** (`/api/agenda/bays`) — cadastro simples (`agenda.view`/`agenda.manage`).
+- **Agendamentos** (`/api/agenda/appointments`) — calendário visual (`?from=&to=&mechanicId=&bayId=`),
+  com checagem de conflito de horário por mecânico e por box/elevador na criação/edição.
+  Camada desacoplada do `ServiceOrder.status`/`scheduledAt` — pode referenciar uma OS existente
+  (`serviceOrderId`) ou ser um agendamento avulso.
+- **Carga de trabalho por mecânico** — `GET /api/agenda/appointments/workload?from=&to=`.
+- **Ocupação de box/elevador** — `GET /api/agenda/appointments/bay-occupancy?from=&to=`.
 
 ## Tempo real
 

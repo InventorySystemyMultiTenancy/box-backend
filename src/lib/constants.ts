@@ -68,3 +68,31 @@ export type UserRole = (typeof USER_ROLES)[number];
 
 export const QUOTE_REQUEST_STATUSES = ["PENDING", "ACCEPTED", "DECLINED"] as const;
 export type QuoteRequestStatus = (typeof QUOTE_REQUEST_STATUSES)[number];
+
+export const ACCOUNT_PAYABLE_STATUSES = ["PENDING", "PAID", "OVERDUE", "CANCELLED"] as const;
+export type AccountPayableStatus = (typeof ACCOUNT_PAYABLE_STATUSES)[number];
+
+export const ACCOUNT_RECEIVABLE_STATUSES = ["PENDING", "RECEIVED", "OVERDUE", "CANCELLED"] as const;
+export type AccountReceivableStatus = (typeof ACCOUNT_RECEIVABLE_STATUSES)[number];
+
+export const INVOICE_TYPES = ["NFE", "NFSE", "NFCE"] as const;
+export type InvoiceType = (typeof INVOICE_TYPES)[number];
+
+export const INVOICE_STATUSES = ["DRAFT", "PENDING", "ISSUED", "CANCELLED", "ERROR"] as const;
+export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
+
+export const PURCHASE_ORDER_STATUSES = ["DRAFT", "SENT", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"] as const;
+export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];
+
+export const BAY_TYPES = ["BAY", "LIFT"] as const;
+export type BayType = (typeof BAY_TYPES)[number];
+
+export const APPOINTMENT_STATUSES = [
+  "SCHEDULED",
+  "CONFIRMED",
+  "IN_PROGRESS",
+  "DONE",
+  "CANCELLED",
+  "NO_SHOW",
+] as const;
+export type AppointmentStatus = (typeof APPOINTMENT_STATUSES)[number];

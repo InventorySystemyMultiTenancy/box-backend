@@ -12,6 +12,9 @@ const partSchema = z.object({
   description: z.string().optional(),
   unitCost: z.coerce.number().min(0),
   stockQty: z.coerce.number().int().min(0),
+  minStockQty: z.coerce.number().int().min(0).optional(),
+  reorderQty: z.coerce.number().int().min(0).optional(),
+  preferredSupplierId: z.string().optional(),
   active: z.coerce.boolean().optional(),
 });
 
@@ -32,6 +35,7 @@ inventoryPartsRouter.post("/", requireAuth, requireRole("ADMIN"), upload.single(
     data: {
       ...parsed.data,
       sku: parsed.data.sku || undefined,
+      preferredSupplierId: parsed.data.preferredSupplierId || undefined,
       photoUrl,
       active: parsed.data.active ?? true,
     },
@@ -49,6 +53,7 @@ inventoryPartsRouter.patch("/:id", requireAuth, requireRole("ADMIN"), upload.sin
     data: {
       ...parsed.data,
       sku: parsed.data.sku || undefined,
+      preferredSupplierId: parsed.data.preferredSupplierId || undefined,
       ...(photoUrl ? { photoUrl } : {}),
     },
   });

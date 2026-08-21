@@ -2,8 +2,20 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole } from "@/middleware/auth";
+import { requirePermission } from "@/middleware/permissions";
+import { getCashFlow, getDRE } from "@/services/cash-flow.service";
 
 export const financeRouter = Router();
+
+financeRouter.get("/cash-flow", requireAuth, requirePermission("finance", "view"), async (req, res) => {
+  const cashFlow = await getCashFlow(req.query as { from?: string; to?: string });
+  res.json({ cashFlow });
+});
+
+financeRouter.get("/dre", requireAuth, requirePermission("finance", "view"), async (req, res) => {
+  const dre = await getDRE(req.query as { from?: string; to?: string });
+  res.json({ dre });
+});
 
 financeRouter.get("/summary", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   const entries = await prisma.financialEntry.findMany({ orderBy: { occurredAt: "desc" } });

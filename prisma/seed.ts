@@ -6,9 +6,18 @@ import { prisma } from "@/lib/prisma";
 // nascer demonstrável, sem tela vazia.
 async function main() {
   console.log("Seed: limpando dados existentes...");
+  await prisma.appointment.deleteMany();
+  await prisma.bay.deleteMany();
+  await prisma.purchaseOrderItem.deleteMany();
+  await prisma.purchaseOrder.deleteMany();
+  await prisma.invoice.deleteMany();
+  await prisma.accountReceivable.deleteMany();
+  await prisma.accountPayable.deleteMany();
+  await prisma.bankAccount.deleteMany();
   await prisma.financialEntry.deleteMany();
   await prisma.problemPartUsage.deleteMany();
   await prisma.inventoryPart.deleteMany();
+  await prisma.supplier.deleteMany();
   await prisma.quoteRequest.deleteMany();
   await prisma.chatMessage.deleteMany();
   await prisma.media.deleteMany();
@@ -32,6 +41,16 @@ async function main() {
     { resource: "clients", action: "delete" },
     { resource: "roles", action: "view" },
     { resource: "roles", action: "manage" },
+    { resource: "finance", action: "view" },
+    { resource: "finance", action: "manage" },
+    { resource: "invoices", action: "view" },
+    { resource: "invoices", action: "manage" },
+    { resource: "suppliers", action: "view" },
+    { resource: "suppliers", action: "manage" },
+    { resource: "purchases", action: "view" },
+    { resource: "purchases", action: "manage" },
+    { resource: "agenda", action: "view" },
+    { resource: "agenda", action: "manage" },
   ];
   const permissions = await Promise.all(
     permissionsCatalog.map((p) => prisma.permission.create({ data: p }))
@@ -49,8 +68,11 @@ async function main() {
   await prisma.rolePermission.createMany({
     data: permissions.map((p) => ({ roleId: adminRole.id, permissionId: p.id })),
   });
-  await prisma.rolePermission.create({
-    data: { roleId: mechanicRole.id, permissionId: permissionByKey("clients", "view") },
+  await prisma.rolePermission.createMany({
+    data: [
+      { roleId: mechanicRole.id, permissionId: permissionByKey("clients", "view") },
+      { roleId: mechanicRole.id, permissionId: permissionByKey("agenda", "view") },
+    ],
   });
 
   const customerPassword = await bcrypt.hash("cliente123", 10);
@@ -87,11 +109,25 @@ async function main() {
     },
   });
 
+  console.log("Seed: fornecedores...");
+  const supplier = await prisma.supplier.create({
+    data: {
+      name: "AutoPeças SP Ltda",
+      cpfCnpj: "12.345.678/0001-90",
+      contactName: "Roberto Lima",
+      phone: "+55 11 4000-0000",
+      email: "vendas@autopecassp.demo",
+      city: "São Paulo",
+      state: "SP",
+    },
+  });
+
   await prisma.inventoryPart.createMany({
     data: [
-      { name: "Disco de freio dianteiro", sku: "FREIO-DISCO-D", unitCost: 180, stockQty: 8 },
-      { name: "Bobina de ignição", sku: "IGN-BOBINA", unitCost: 145, stockQty: 6 },
-      { name: "Pastilha de freio", sku: "FREIO-PAST", unitCost: 90, stockQty: 12 },
+      { name: "Disco de freio dianteiro", sku: "FREIO-DISCO-D", unitCost: 180, stockQty: 8, minStockQty: 4, reorderQty: 10, preferredSupplierId: supplier.id },
+      { name: "Bobina de ignição", sku: "IGN-BOBINA", unitCost: 145, stockQty: 6, minStockQty: 3, reorderQty: 8, preferredSupplierId: supplier.id },
+      // Abaixo do ponto mínimo de propósito — demonstra a sugestão de reposição.
+      { name: "Pastilha de freio", sku: "FREIO-PAST", unitCost: 90, stockQty: 2, minStockQty: 5, reorderQty: 15, preferredSupplierId: supplier.id },
     ],
   });
 
@@ -274,6 +310,136 @@ async function main() {
     },
   });
 
+  console.log("Seed: financeiro e fiscal...");
+  const mainAccount = await prisma.bankAccount.create({
+    data: { name: "Caixa principal", bank: "Nubank PJ", initialBalance: 5000 },
+  });
+
+  const orderClient = await prisma.client.findUnique({ where: { userId: customer.id } });
+
+  await prisma.accountPayable.create({
+    data: {
+      description: "Compra de peças — distribuidor AutoPeças SP",
+      category: "FORNECEDOR",
+      payeeName: "AutoPeças SP Ltda",
+      amount: 1200,
+      dueDate: atToday(0, 0),
+      status: "PAID",
+      paidAt: atToday(8, 0),
+      paidAmount: 1200,
+      bankAccountId: mainAccount.id,
+      paymentMethod: "PIX",
+    },
+  });
+  await prisma.accountPayable.create({
+    data: {
+      description: "Aluguel do galpão",
+      category: "ALUGUEL",
+      payeeName: "Imobiliária Central",
+      amount: 3500,
+      dueDate: futureDate(10),
+    },
+  });
+
+  const receivedReceivable = await prisma.accountReceivable.create({
+    data: {
+      description: `Serviços — OS ${order.code} (sinal)`,
+      category: "SERVIÇO",
+      clientId: orderClient?.id,
+      serviceOrderId: order.id,
+      amount: 600,
+      dueDate: atToday(0, 0),
+      status: "RECEIVED",
+      receivedAt: atToday(11, 30),
+      receivedAmount: 600,
+      bankAccountId: mainAccount.id,
+      paymentMethod: "PIX",
+    },
+  });
+  await prisma.accountReceivable.create({
+    data: {
+      description: `Serviços — OS ${order.code} (saldo na entrega)`,
+      category: "SERVIÇO",
+      clientId: orderClient?.id,
+      serviceOrderId: order.id,
+      amount: 600,
+      dueDate: futureDate(2),
+    },
+  });
+
+  await prisma.invoice.create({
+    data: {
+      type: "NFSE",
+      status: "ISSUED",
+      number: "000000001",
+      series: "1",
+      provider: "MOCK",
+      providerRef: "seed-demo-ref",
+      serviceOrderId: order.id,
+      clientId: orderClient?.id,
+      accountReceivableId: receivedReceivable.id,
+      totalAmount: 600,
+      issueDate: atToday(11, 35),
+    },
+  });
+
+  console.log("Seed: compras...");
+  const pastilhaPart = await prisma.inventoryPart.findUnique({ where: { sku: "FREIO-PAST" } });
+  const purchaseOrder = await prisma.purchaseOrder.create({
+    data: {
+      code: "PC-2026-00001",
+      supplierId: supplier.id,
+      status: "SENT",
+      sentAt: atToday(8, 30),
+      expectedDate: futureDate(5),
+      items: { create: [{ inventoryPartId: pastilhaPart!.id, quantity: 15, unitCost: 90 }] },
+    },
+  });
+  await prisma.accountPayable.create({
+    data: {
+      description: `Pedido de compra ${purchaseOrder.code} — ${supplier.name}`,
+      category: "FORNECEDOR",
+      payeeName: supplier.name,
+      amount: 15 * 90,
+      dueDate: futureDate(5),
+      purchaseOrderId: purchaseOrder.id,
+      supplierId: supplier.id,
+    },
+  });
+
+  console.log("Seed: agenda...");
+  const lift1 = await prisma.bay.create({ data: { name: "Elevador 1", type: "LIFT" } });
+  const bay2 = await prisma.bay.create({ data: { name: "Box 2", type: "BAY" } });
+
+  await prisma.appointment.create({
+    data: {
+      title: `OS ${order.code} — Civic 2021`,
+      vehicleId: vehicle.id,
+      clientId: orderClient?.id,
+      serviceOrderId: order.id,
+      mechanicId: mechanic.id,
+      bayId: lift1.id,
+      startAt: atToday(9, 0),
+      estimatedDurationMin: 240,
+      status: "IN_PROGRESS",
+      notes: "Troca de bomba d'água + pastilhas dianteiras.",
+    },
+  });
+
+  const requestClient = await prisma.client.findUnique({ where: { userId: customerWithRequest.id } });
+  await prisma.appointment.create({
+    data: {
+      title: "Revisão preventiva — HB20",
+      vehicleId: quoteRequest.vehicleId,
+      clientId: requestClient?.id,
+      mechanicId: mechanic.id,
+      bayId: bay2.id,
+      startAt: futureDate(2),
+      estimatedDurationMin: 90,
+      status: "SCHEDULED",
+    },
+  });
+
   console.log("Seed concluído:");
   console.log(`  Cliente: cliente@box.demo / cliente123 (com ordem em andamento)`);
   console.log(`  Cliente: cliente2@box.demo / cliente123 (sem ordens — testa "solicitar orçamento")`);
@@ -288,6 +454,12 @@ async function main() {
 function atToday(hour: number, minute: number) {
   const d = new Date();
   d.setHours(hour, minute, 0, 0);
+  return d;
+}
+
+function futureDate(daysAhead: number) {
+  const d = new Date();
+  d.setDate(d.getDate() + daysAhead);
   return d;
 }
 
