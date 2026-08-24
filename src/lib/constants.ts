@@ -33,6 +33,23 @@ export const STATUS_PROGRESS: Record<ServiceOrderStatus, number> = {
   WASHING: 92,
   FINISHED: 97,
   READY_FOR_PICKUP: 100,
+} as const;
+
+// Rótulo em pt-BR de cada status — espelha STATUS_LABELS do frontend (lib/types.ts).
+// Usado para gerar o texto do evento de timeline e da mensagem de WhatsApp ao avançar etapa.
+export const STATUS_LABELS: Record<ServiceOrderStatus, string> = {
+  SCHEDULED: "Agendado — aguardando veículo",
+  RECEIVED: "Veículo recebido",
+  AWAITING_DIAGNOSIS: "Aguardando diagnóstico",
+  DIAGNOSIS_DONE: "Diagnóstico concluído",
+  AWAITING_APPROVAL: "Aguardando aprovação",
+  PARTS_REQUESTED: "Peças solicitadas",
+  PARTS_RECEIVED: "Peças recebidas",
+  IN_PROGRESS: "Reparação em andamento",
+  TESTING: "Testes",
+  WASHING: "Lavagem",
+  FINISHED: "Finalizado",
+  READY_FOR_PICKUP: "Pronto para retirada",
 };
 
 export const PART_STATUSES = [

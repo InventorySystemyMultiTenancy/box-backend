@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
-import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS } from "@/lib/constants";
+import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
 import { upload, persistUploadedFile } from "@/middleware/upload";
 import { recordAudit } from "@/services/audit.service";
@@ -12,7 +12,7 @@ import { recordAudit } from "@/services/audit.service";
 export const serviceOrdersRouter = Router();
 
 const orderInclude = {
-  vehicle: { include: { owner: { select: { id: true, name: true, email: true } } } },
+  vehicle: { include: { owner: { select: { id: true, name: true, email: true, phone: true } } } },
   timelineEvents: {
     orderBy: { occurredAt: "asc" as const },
     include: { media: true, author: { select: { name: true } } },
@@ -181,13 +181,19 @@ serviceOrdersRouter.patch("/:id/process", requireAuth, requireRole("MECHANIC", "
 
 const statusSchema = z.object({
   status: z.enum(SERVICE_ORDER_STATUSES),
-  progress: z.number().min(0).max(100).optional(),
+  progress: z.coerce.number().min(0).max(100).optional(),
 });
 
+// Avançar etapa — usado tanto pelo drag-and-drop do Kanban (sem foto) quanto pelo
+// botão "Avançar etapa" dentro do projeto (com foto opcional). Aceita JSON ou
+// multipart/form-data (upload.single só processa o segundo caso, o primeiro passa
+// direto pelo express.json já aplicado globalmente). Toda mudança gera um evento
+// na timeline, com a foto anexada quando houver.
 serviceOrdersRouter.patch(
   "/:id/status",
   requireAuth,
   requireRole("MECHANIC", "ADMIN"),
+  upload.single("photo"),
   async (req: AuthedRequest<{ id: string }>, res) => {
     const parsed = statusSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Status inválido.", details: parsed.error.flatten() });
@@ -198,13 +204,39 @@ serviceOrdersRouter.patch(
     }
 
     const before = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
-    const order = await prisma.$transaction(async (tx) => {
+    if (!before) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+
+    const photoUrl = req.file ? await persistUploadedFile(req.file) : undefined;
+    const statusChanged = before.status !== status;
+
+    const { order, event } = await prisma.$transaction(async (tx) => {
       const order = await tx.serviceOrder.update({
         where: { id: req.params.id },
         data: { status, progress: progress ?? STATUS_PROGRESS[status] },
       });
 
-      return order;
+      let event = null;
+      if (statusChanged || photoUrl) {
+        event = await tx.timelineEvent.create({
+          data: {
+            serviceOrderId: order.id,
+            title: statusChanged ? `Etapa avançada: ${STATUS_LABELS[status]}` : `Foto adicionada — ${STATUS_LABELS[status]}`,
+            authorId: req.user!.id,
+          },
+          include: { media: true, author: { select: { name: true } } },
+        });
+        if (photoUrl) {
+          await tx.media.create({
+            data: { serviceOrderId: order.id, timelineEventId: event.id, url: photoUrl, type: "PHOTO", label: `Foto — ${STATUS_LABELS[status]}` },
+          });
+          event = await tx.timelineEvent.findUniqueOrThrow({
+            where: { id: event.id },
+            include: { media: true, author: { select: { name: true } } },
+          });
+        }
+      }
+
+      return { order, event };
     });
 
     await recordAudit({
@@ -212,12 +244,13 @@ serviceOrdersRouter.patch(
       action: "STATUS_CHANGE",
       entity: "ServiceOrder",
       entityId: order.id,
-      before: { status: before?.status },
+      before: { status: before.status },
       after: { status: order.status },
     });
 
     emitToOrder(order.id, "status:update", { orderId: order.id, status: order.status, progress: order.progress });
-    res.json({ order });
+    if (event) emitToOrder(order.id, "timeline:new", { event });
+    res.json({ order, event });
   }
 );
 
