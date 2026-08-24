@@ -49,6 +49,8 @@ model User {
   timeEntries                 TimeEntry[]       @relation("TimeEntryEmployee")
   auditLogs                   AuditLog[]        @relation("AuditLogActor")
   notifications               Notification[]    @relation("NotificationRecipient")
+  trucksAssigned              Truck[]           @relation("TruckAssignedEmployee")
+  truckTrips                  TruckTrip[]       @relation("TruckTripDriver")
 }
 
 // Comissão de mecânico sobre um reparo aprovado — uma por Approval (evita duplicar
@@ -911,4 +913,47 @@ model DocumentTemplate {
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Caminhão alugado/próprio usado para buscar veículos de clientes. Atribuído a um
+// funcionário — só ele (ou o admin) pode iniciar/finalizar uma pilotagem.
+model Truck {
+  id                 String   @id @default(cuid())
+  plate              String   @unique
+  brand              String?
+  model              String?
+  year               Int?
+  assignedEmployeeId String?
+  assignedEmployee   User?    @relation("TruckAssignedEmployee", fields: [assignedEmployeeId], references: [id])
+  active             Boolean  @default(true)
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  trips TruckTrip[]
+}
+
+// Uma "pilotagem" do caminhão: do início (km/combustível/estado, foto opcional) até
+// a devolução (km/combustível/estado, foto OBRIGATÓRIA dos veículos entregues dentro
+// do caminhão) — histórico de uso para controlar caminhões alugados.
+model TruckTrip {
+  id             String    @id @default(cuid())
+  truckId        String
+  truck          Truck     @relation(fields: [truckId], references: [id])
+  driverId       String
+  driver         User      @relation("TruckTripDriver", fields: [driverId], references: [id])
+  status         String    @default("IN_PROGRESS") // IN_PROGRESS | COMPLETED
+  startedAt      DateTime  @default(now())
+  startKm        Int
+  startFuelLevel String
+  startCondition String?
+  startPhotoUrl  String?
+  endedAt        DateTime?
+  endKm          Int?
+  endFuelLevel   String?
+  endCondition   String?
+  endPhotoUrl    String?
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 }

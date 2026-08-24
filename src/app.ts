@@ -39,6 +39,7 @@ import { auditRouter } from "@/routes/audit.routes";
 import { alertsRouter } from "@/routes/alerts.routes";
 import { documentTemplatesRouter } from "@/routes/document-templates.routes";
 import { searchRouter } from "@/routes/search.routes";
+import { trucksRouter } from "@/routes/trucks.routes";
 
 export const app = express();
 
@@ -88,5 +89,6 @@ app.use("/api/audit-logs", auditRouter);
 app.use("/api/alerts", alertsRouter);
 app.use("/api/document-templates", documentTemplatesRouter);
 app.use("/api/search", searchRouter);
+app.use("/api/trucks", trucksRouter);
 
 app.use((_req, res) => res.status(404).json({ error: "Rota não encontrada." }));

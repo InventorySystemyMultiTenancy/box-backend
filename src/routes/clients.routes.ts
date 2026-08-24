@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth, AuthedRequest } from "@/middleware/auth";
 import { requirePermission } from "@/middleware/permissions";
-import { listClients, getClientDetail, createClient, updateClient, archiveClient, ClientError } from "@/services/clients.service";
+import { listClients, getClientDetail, createClient, createClientWithLogin, updateClient, archiveClient, ClientError } from "@/services/clients.service";
 
 export const clientsRouter = Router();
 
@@ -47,6 +47,21 @@ clientsRouter.post("/", requireAuth, requirePermission("clients", "create"), asy
   try {
     const client = await createClient(parsed.data);
     res.status(201).json({ client });
+  } catch (err) {
+    if (err instanceof ClientError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
+});
+
+// Cria Client + User (com login) juntos — usado ao abrir um projeto novo direto (sem
+// solicitação prévia) com um cliente que ainda não existe no sistema.
+clientsRouter.post("/quick-create", requireAuth, requirePermission("clients", "create"), async (req, res) => {
+  const parsed = clientSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+  try {
+    const { client, user, generatedPassword } = await createClientWithLogin(parsed.data);
+    res.status(201).json({ client, userId: user.id, generatedPassword });
   } catch (err) {
     if (err instanceof ClientError) return res.status(err.status).json({ error: err.message });
     throw err;

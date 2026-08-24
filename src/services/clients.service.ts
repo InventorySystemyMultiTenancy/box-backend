@@ -1,3 +1,5 @@
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { parsePageParams, paginated } from "@/lib/pagination";
 
@@ -129,6 +131,27 @@ export async function archiveClient(id: string) {
   const client = await prisma.client.findUnique({ where: { id } });
   if (!client) throw new ClientError("Cliente não encontrado.", 404);
   await prisma.client.update({ where: { id }, data: { active: false } });
+}
+
+// Abrir um projeto novo direto (sem solicitação prévia) precisa de um Client (CRM) E de
+// um User (Vehicle.ownerId exige um dono com login) — cria os dois juntos com uma senha
+// gerada, já que o funcionário não vai inventar uma senha para um cliente que chegou agora.
+// A senha é devolvida uma única vez na resposta para a equipe repassar se quiser.
+export async function createClientWithLogin(input: ClientInput) {
+  if (!input.email) throw new ClientError("Informe um e-mail para criar o acesso do cliente.", 400);
+
+  const existingUser = await prisma.user.findUnique({ where: { email: input.email } });
+  if (existingUser) throw new ClientError("Já existe um usuário com este e-mail.", 409);
+
+  const generatedPassword = crypto.randomBytes(6).toString("base64url");
+  const passwordHash = await bcrypt.hash(generatedPassword, 10);
+
+  const user = await prisma.user.create({
+    data: { name: input.name, email: input.email, passwordHash, role: "CUSTOMER", phone: input.phone },
+  });
+  const client = await prisma.client.create({ data: { ...toData(input), userId: user.id } as never });
+
+  return { client, user, generatedPassword };
 }
 
 // Usado pela leitura de nota fiscal por IA: casa o destinatário identificado na imagem
