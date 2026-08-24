@@ -238,13 +238,14 @@ serviceOrdersRouter.patch(
     const parsed = finalizeSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
+    // Só exige que o próprio trabalho da oficina esteja concluído (peças sem status
+    // CRITICAL/IN_PROGRESS/WARNING) — não trava a entrega esperando resposta do
+    // cliente a uma aprovação. Mecânico/admin podem forçar uma peça para concluída
+    // (POST .../:partId/resolve) mesmo sem aprovação, e a entrega segue esse mesmo critério.
     const unresolvedParts = await prisma.vehiclePart.count({
       where: { serviceOrderId: req.params.id, status: { in: ["CRITICAL", "IN_PROGRESS", "WARNING"] } },
     });
-    const pendingApprovals = await prisma.approval.count({
-      where: { serviceOrderId: req.params.id, status: "PENDING" },
-    });
-    if (unresolvedParts > 0 || pendingApprovals > 0) {
+    if (unresolvedParts > 0) {
       return res.status(409).json({ error: "Ainda há problemas não resolvidos nesta ordem de serviço." });
     }
 
