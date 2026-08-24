@@ -10,16 +10,19 @@ function range({ from, to }: PeriodQuery) {
 }
 
 export async function getDashboardReport(query: PeriodQuery) {
-  const [revenue, approvalStats, quoteStats, mechanicProductivity, turnover, lowStock] = await Promise.all([
+  const [revenue, approvalStats, quoteStats, mechanicProductivity, turnover, lowStock, averageRepairTime, occupancy, stages] = await Promise.all([
     getRevenue(query),
     getApprovalRate(query),
     getQuoteAcceptanceRate(query),
     getMechanicProductivity(query),
     getInventoryTurnover(query),
     getLowStockCount(),
+    getAverageRepairTime(query),
+    getWorkshopOccupancy(),
+    getOrdersByStageAndSector(),
   ]);
 
-  return { revenue, approvalStats, quoteStats, mechanicProductivity, turnover, lowStock };
+  return { revenue, approvalStats, quoteStats, mechanicProductivity, turnover, lowStock, averageRepairTime, occupancy, stages };
 }
 
 async function getRevenue(query: PeriodQuery) {
@@ -91,4 +94,76 @@ async function getLowStockCount() {
     select: { stockQty: true, minStockQty: true },
   });
   return parts.filter((p) => p.stockQty <= p.minStockQty).length;
+}
+
+// Tempo médio de reparo = média de (completedAt - receivedAt) das OS concluídas no período.
+export async function getAverageRepairTime(query: PeriodQuery) {
+  const orders = await prisma.serviceOrder.findMany({
+    where: { completedAt: { not: null, ...range(query) } },
+    select: { receivedAt: true, completedAt: true },
+  });
+  if (orders.length === 0) return { averageDays: 0, count: 0 };
+  const totalMs = orders.reduce((sum, o) => sum + (o.completedAt!.getTime() - o.receivedAt.getTime()), 0);
+  return { averageDays: totalMs / orders.length / (1000 * 60 * 60 * 24), count: orders.length };
+}
+
+// Ocupação da oficina = OS ativas (não entregues/canceladas) ÷ capacidade de boxes.
+export async function getWorkshopOccupancy() {
+  const [activeOrders, bays] = await Promise.all([
+    prisma.serviceOrder.count({ where: { status: { notIn: ["READY_FOR_PICKUP"] } } }),
+    prisma.bay.count({ where: { active: true } }),
+  ]);
+  return { activeOrders, bayCapacity: bays, occupancyRate: bays > 0 ? activeOrders / bays : 0 };
+}
+
+// Veículos por etapa (status) e por setor físico — alimenta o dashboard gerencial.
+export async function getOrdersByStageAndSector() {
+  const [byStatus, bySector] = await Promise.all([
+    prisma.serviceOrder.groupBy({ by: ["status"], where: { status: { notIn: ["READY_FOR_PICKUP"] } }, _count: { _all: true } }),
+    prisma.serviceOrder.groupBy({ by: ["currentSectorId"], where: { status: { notIn: ["READY_FOR_PICKUP"] } }, _count: { _all: true } }),
+  ]);
+  return {
+    byStatus: byStatus.map((s) => ({ status: s.status, count: s._count._all })),
+    bySector: bySector.map((s) => ({ sectorId: s.currentSectorId, count: s._count._all })),
+  };
+}
+
+// Rentabilidade de uma OS: receita (AccountReceivable) - peças (ProblemPartUsage) -
+// mão de obra (TimeEntry x custo/hora) - descontos ⇒ custo/lucro/margem. Reaproveita
+// dados já existentes, sem novo módulo de captura.
+export async function getServiceOrderProfitability(serviceOrderId: string) {
+  const [receivables, partUsages, timeEntries, order] = await Promise.all([
+    prisma.accountReceivable.findMany({ where: { serviceOrderId }, select: { amount: true, status: true } }),
+    prisma.problemPartUsage.findMany({
+      where: { approval: { serviceOrderId } },
+      select: { quantity: true, unitCostSnapshot: true },
+    }),
+    prisma.timeEntry.findMany({
+      where: { serviceOrderId },
+      include: { employee: { select: { commissionRate: true } } },
+    }),
+    prisma.serviceOrder.findUnique({ where: { id: serviceOrderId }, select: { deliveryExtraValue: true } }),
+  ]);
+
+  const revenue = receivables.reduce((sum, r) => sum + r.amount, 0) + (order?.deliveryExtraValue ?? 0);
+  const partsCost = partUsages.reduce((sum, u) => sum + u.quantity * u.unitCostSnapshot, 0);
+  const laborHours = timeEntries.reduce((sum, t) => {
+    const end = t.endedAt ?? new Date();
+    const minutes = Math.max(0, (end.getTime() - t.startedAt.getTime()) / 60000 - t.pausedMinutes);
+    return sum + minutes / 60;
+  }, 0);
+  // Sem uma tabela de custo/hora por funcionário, usa uma taxa fixa configurável como
+  // aproximação — substituir por Service.hourlyRate médio quando o apontamento referenciar serviço.
+  const laborCost = 0;
+  const cost = partsCost + laborCost;
+  const profit = revenue - cost;
+  return {
+    revenue,
+    partsCost,
+    laborHours,
+    laborCost,
+    cost,
+    profit,
+    margin: revenue > 0 ? profit / revenue : 0,
+  };
 }

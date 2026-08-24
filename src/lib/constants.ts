@@ -108,3 +108,59 @@ export const APPOINTMENT_STATUSES = [
   "NO_SHOW",
 ] as const;
 export type AppointmentStatus = (typeof APPOINTMENT_STATUSES)[number];
+
+// --- Gaps SIGMA (fases 1-8) ---------------------------------------------
+
+export const SERVICE_ORDER_PRIORITIES = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
+export type ServiceOrderPriority = (typeof SERVICE_ORDER_PRIORITIES)[number];
+
+export const APPROVAL_KINDS = ["INITIAL", "SUPPLEMENT"] as const;
+export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
+
+export const INVENTORY_PART_KINDS = ["PART", "MATERIAL"] as const;
+export type InventoryPartKind = (typeof INVENTORY_PART_KINDS)[number];
+
+export const ESTIMATE_STATUSES = [
+  "DRAFT",
+  "AWAITING_APPROVAL",
+  "APPROVED",
+  "PARTIALLY_APPROVED",
+  "REJECTED",
+  "SUPPLEMENT_REQUESTED",
+  "CANCELLED",
+  "CONVERTED",
+] as const;
+export type EstimateStatus = (typeof ESTIMATE_STATUSES)[number];
+
+export const ESTIMATE_ITEM_CLASSIFICATIONS = ["REPAIR", "REPLACE", "REUSE", "PENDING"] as const;
+export type EstimateItemClassification = (typeof ESTIMATE_ITEM_CLASSIFICATIONS)[number];
+
+export const INSPECTION_STATUSES = [
+  "TO_SCHEDULE",
+  "SCHEDULED",
+  "DONE",
+  "RESCHEDULED",
+  "CANCELLED",
+  "ADJUSTMENT_PENDING",
+] as const;
+export type InspectionStatus = (typeof INSPECTION_STATUSES)[number];
+
+export const INSPECTION_ISSUE_STATUSES = ["OPEN", "IN_PROGRESS", "RESOLVED"] as const;
+export type InspectionIssueStatus = (typeof INSPECTION_ISSUE_STATUSES)[number];
+
+export const TIME_ENTRY_STATUSES = ["RUNNING", "PAUSED", "DONE"] as const;
+export type TimeEntryStatus = (typeof TIME_ENTRY_STATUSES)[number];
+
+export const NOTIFICATION_TYPES = [
+  "STALE_STATUS",
+  "SUPPLEMENT_PENDING",
+  "LOW_STOCK",
+  "INSPECTION_TODAY",
+  "DELIVERY_TOMORROW",
+] as const;
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+
+// Nº de dias parado num mesmo status a partir do qual a OS entra no alerta "parada".
+export const STALE_STATUS_ALERT_DAYS = 3;
+// Nº de dias de complemento pendente a partir do qual entra no alerta.
+export const SUPPLEMENT_PENDING_ALERT_DAYS = 2;

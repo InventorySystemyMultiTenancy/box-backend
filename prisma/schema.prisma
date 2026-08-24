@@ -12,16 +12,18 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  name         String
-  email        String   @unique
-  passwordHash String
-  role         String   @default("CUSTOMER") // CUSTOMER | MECHANIC | ADMIN
-  phone        String?
+  id             String   @id @default(cuid())
+  name           String
+  email          String   @unique
+  passwordHash   String
+  role           String   @default("CUSTOMER") // CUSTOMER | MECHANIC | ADMIN
+  phone          String?
   // Percentual de comissão (0.10 = 10%) — só relevante para MECHANIC. Snapshot em
   // Commission.rate no momento da geração, então mudar aqui não afeta comissões já geradas.
   commissionRate Float?
-  createdAt    DateTime @default(now())
+  // Jornada semanal (horas) — usada só no cálculo de capacidade produtiva (Fase 5).
+  weeklyHours    Float?
+  createdAt      DateTime @default(now())
 
   // Cargo (Role) — granularidade fina de permissões, além do `role` acima que
   // continua sendo usado pelas rotas legadas (requireRole). Só STAFF tem cargo.
@@ -29,14 +31,24 @@ model User {
   roleRef         Role?            @relation(fields: [roleId], references: [id])
   userPermissions UserPermission[]
 
-  vehicles              Vehicle[]
-  timelineEvents        TimelineEvent[] @relation("EventAuthor")
-  vehicleParts          VehiclePart[]   @relation("PartResponsible")
-  quoteRequestsAsCustomer QuoteRequest[] @relation("QuoteRequestCustomer")
-  quoteRequestsAsMechanic QuoteRequest[] @relation("QuoteRequestMechanic")
-  client                Client?
-  appointmentsAsMechanic Appointment[]  @relation("AppointmentMechanic")
-  commissions            Commission[]   @relation("MechanicCommissions")
+  vehicles                Vehicle[]
+  timelineEvents          TimelineEvent[] @relation("EventAuthor")
+  vehicleParts            VehiclePart[]   @relation("PartResponsible")
+  quoteRequestsAsCustomer QuoteRequest[]  @relation("QuoteRequestCustomer")
+  quoteRequestsAsMechanic QuoteRequest[]  @relation("QuoteRequestMechanic")
+  client                  Client?
+  appointmentsAsMechanic  Appointment[]   @relation("AppointmentMechanic")
+  commissions             Commission[]    @relation("MechanicCommissions")
+
+  serviceOrdersAsConsultant   ServiceOrder[]    @relation("ServiceOrderConsultant")
+  serviceOrdersAsEstimator    ServiceOrder[]    @relation("ServiceOrderEstimator")
+  serviceOrdersAsTechnician   ServiceOrder[]    @relation("ServiceOrderTechnician")
+  inspectionsAsInspector      Inspection[]      @relation("InspectionInspector")
+  inspectionIssuesResponsible InspectionIssue[] @relation("InspectionIssueResponsible")
+  vehicleDamagesAuthored      VehicleDamage[]   @relation("VehicleDamageAuthor")
+  timeEntries                 TimeEntry[]       @relation("TimeEntryEmployee")
+  auditLogs                   AuditLog[]        @relation("AuditLogActor")
+  notifications               Notification[]    @relation("NotificationRecipient")
 }
 
 // Comissão de mecânico sobre um reparo aprovado — uma por Approval (evita duplicar
@@ -78,6 +90,7 @@ model Store {
   bays           Bay[]
   purchaseOrders PurchaseOrder[]
   counterSales   CounterSale[]
+  sectors        Sector[]
 }
 
 // Conta bancária/caixa da oficina — origem/destino de contas a pagar e a receber,
@@ -101,7 +114,7 @@ model BankAccount {
 // Conta a pagar (fornecedor, boleto, despesa fixa...). Parcelas de uma mesma
 // compra compartilham `groupId` e têm installmentNumber/installmentTotal preenchidos.
 model AccountPayable {
-  id                String       @id @default(cuid())
+  id                String         @id @default(cuid())
   description       String
   category          String
   payeeName         String
@@ -109,21 +122,21 @@ model AccountPayable {
   dueDate           DateTime
   paidAt            DateTime?
   paidAmount        Float?
-  status            String       @default("PENDING") // PENDING | PAID | OVERDUE | CANCELLED
+  status            String         @default("PENDING") // PENDING | PAID | OVERDUE | CANCELLED
   paymentMethod     String?
   bankAccountId     String?
-  bankAccount       BankAccount? @relation(fields: [bankAccountId], references: [id])
+  bankAccount       BankAccount?   @relation(fields: [bankAccountId], references: [id])
   // Preenchido quando esta conta foi gerada automaticamente ao enviar um pedido de compra.
   purchaseOrderId   String?
   purchaseOrder     PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
   supplierId        String?
-  supplier          Supplier?    @relation(fields: [supplierId], references: [id])
+  supplier          Supplier?      @relation(fields: [supplierId], references: [id])
   installmentNumber Int?
   installmentTotal  Int?
   groupId           String?
   notes             String?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
 
   commission Commission?
 }
@@ -152,29 +165,29 @@ model AccountReceivable {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  invoices     Invoice[]
-  counterSale  CounterSale?
+  invoices    Invoice[]
+  counterSale CounterSale?
 }
 
 // Nota fiscal (NF-e/NFS-e/NFC-e). `provider` identifica o gateway usado para emissão
 // (MOCK em dev/sem contrato fiscal — trocar por um provider real como eNotas/Focus NFe
 // implementando a mesma interface em src/services/fiscal/nfe-provider.ts).
 model Invoice {
-  id                  String              @id @default(cuid())
-  type                String              // NFE | NFSE | NFCE
-  status              String              @default("DRAFT") // DRAFT | PENDING | ISSUED | CANCELLED | ERROR
+  id                  String             @id @default(cuid())
+  type                String // NFE | NFSE | NFCE
+  status              String             @default("DRAFT") // DRAFT | PENDING | ISSUED | CANCELLED | ERROR
   number              String?
   series              String?
   accessKey           String? // chave de acesso (NF-e/NFC-e, 44 dígitos) quando visível no documento
-  operationNature      String? // natureza da operação (ex: "Venda de mercadoria", "Prestação de serviço")
-  provider            String              @default("MOCK") // MOCK (emitido por nós) | MANUAL (registrado a partir de um documento já existente)
+  operationNature     String? // natureza da operação (ex: "Venda de mercadoria", "Prestação de serviço")
+  provider            String             @default("MOCK") // MOCK (emitido por nós) | MANUAL (registrado a partir de um documento já existente)
   providerRef         String?
   serviceOrderId      String?
-  serviceOrder        ServiceOrder?       @relation(fields: [serviceOrderId], references: [id])
+  serviceOrder        ServiceOrder?      @relation(fields: [serviceOrderId], references: [id])
   clientId            String?
-  client              Client?             @relation(fields: [clientId], references: [id])
+  client              Client?            @relation(fields: [clientId], references: [id])
   accountReceivableId String?
-  accountReceivable   AccountReceivable?  @relation(fields: [accountReceivableId], references: [id])
+  accountReceivable   AccountReceivable? @relation(fields: [accountReceivableId], references: [id])
   // Emitente/destinatário como texto — snapshot do documento, independe de o Client mudar depois.
   issuerName          String?
   issuerDocument      String?
@@ -190,28 +203,28 @@ model Invoice {
   xmlUrl              String?
   pdfUrl              String?
   errorMessage        String?
-  createdAt           DateTime            @default(now())
-  updatedAt           DateTime            @updatedAt
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
 }
 
 // Venda de balcão (PDV) — venda avulsa de peças sem OS vinculada, paga na hora.
 // Ao completar, decrementa estoque e gera uma AccountReceivable já como RECEIVED.
 model CounterSale {
-  id                  String              @id @default(cuid())
-  code                String              @unique // ex: PDV-2026-00001
+  id                  String             @id @default(cuid())
+  code                String             @unique // ex: PDV-2026-00001
   storeId             String?
-  store               Store?              @relation(fields: [storeId], references: [id])
+  store               Store?             @relation(fields: [storeId], references: [id])
   clientId            String?
-  client              Client?             @relation(fields: [clientId], references: [id])
+  client              Client?            @relation(fields: [clientId], references: [id])
   customerName        String? // venda sem cadastro de cliente
-  status              String              @default("COMPLETED") // COMPLETED | CANCELLED
+  status              String             @default("COMPLETED") // COMPLETED | CANCELLED
   paymentMethod       String?
   bankAccountId       String?
-  bankAccount         BankAccount?        @relation(fields: [bankAccountId], references: [id])
-  accountReceivableId String?             @unique
-  accountReceivable   AccountReceivable?  @relation(fields: [accountReceivableId], references: [id])
+  bankAccount         BankAccount?       @relation(fields: [bankAccountId], references: [id])
+  accountReceivableId String?            @unique
+  accountReceivable   AccountReceivable? @relation(fields: [accountReceivableId], references: [id])
   totalAmount         Float
-  createdAt           DateTime            @default(now())
+  createdAt           DateTime           @default(now())
   cancelledAt         DateTime?
 
   items CounterSaleItem[]
@@ -245,9 +258,9 @@ model Supplier {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  purchaseOrders   PurchaseOrder[]
+  purchaseOrders    PurchaseOrder[]
   preferredForParts InventoryPart[]
-  payables         AccountPayable[]
+  payables          AccountPayable[]
 }
 
 // Pedido de compra a um fornecedor. DRAFT -> SENT (gera automaticamente uma conta a
@@ -333,7 +346,7 @@ model Role {
 
 // Catálogo de permissões conhecidas pelo código (resource + action).
 model Permission {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   resource    String
   action      String
   description String?
@@ -398,27 +411,30 @@ model Client {
 }
 
 model InventoryPart {
-  id          String   @id @default(cuid())
-  storeId     String?
-  store       Store?   @relation(fields: [storeId], references: [id])
-  name        String
-  sku         String?  @unique
-  description String?
-  unitCost    Float
-  stockQty    Int      @default(0)
+  id                  String    @id @default(cuid())
+  storeId             String?
+  store               Store?    @relation(fields: [storeId], references: [id])
+  name                String
+  sku                 String?   @unique
+  description         String?
+  // PART (peça) | MATERIAL (consumível: tinta, lixa, fita...) — mesmo módulo de
+  // estoque/compras, só filtrado por tipo nas telas (não duplica cadastro).
+  kind                String    @default("PART")
+  unitCost            Float
+  stockQty            Int       @default(0)
   // Ponto mínimo de estoque e quantidade-alvo ao repor — usados para gerar sugestões
   // automáticas de compra quando stockQty <= minStockQty.
-  minStockQty Int      @default(0)
-  reorderQty  Int      @default(0)
+  minStockQty         Int       @default(0)
+  reorderQty          Int       @default(0)
   preferredSupplierId String?
   preferredSupplier   Supplier? @relation(fields: [preferredSupplierId], references: [id])
-  photoUrl    String?
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  photoUrl            String?
+  active              Boolean   @default(true)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
-  usages          ProblemPartUsage[]
-  financialEntries FinancialEntry[]
+  usages             ProblemPartUsage[]
+  financialEntries   FinancialEntry[]
   purchaseOrderItems PurchaseOrderItem[]
   counterSaleItems   CounterSaleItem[]
 }
@@ -433,6 +449,11 @@ model Vehicle {
   engine    String?
   plate     String?
   mileage   Int      @default(0)
+  chassi    String?
+  renavam   String?
+  color     String?
+  fuelType  String?
+  version   String?
   createdAt DateTime @default(now())
 
   serviceOrders ServiceOrder[]
@@ -441,59 +462,88 @@ model Vehicle {
 }
 
 model ServiceOrder {
-  id            String    @id @default(cuid())
-  code          String    @unique // ex: OS-2026-04471
-  storeId       String?
-  store         Store?    @relation(fields: [storeId], references: [id])
-  vehicleId     String
-  vehicle       Vehicle   @relation(fields: [vehicleId], references: [id])
-  status        String    @default("RECEIVED")
-  progress      Int       @default(0) // 0-100, calculado a partir do status + eventos
-  estimatedMin  Float?
-  estimatedMax  Float?
-  scheduledAt   DateTime?
-  receivedAt    DateTime  @default(now())
-  completedAt   DateTime?
+  id                  String    @id @default(cuid())
+  code                String    @unique // ex: OS-2026-04471
+  storeId             String?
+  store               Store?    @relation(fields: [storeId], references: [id])
+  vehicleId           String
+  vehicle             Vehicle   @relation(fields: [vehicleId], references: [id])
+  status              String    @default("RECEIVED")
+  progress            Int       @default(0) // 0-100, calculado a partir do status + eventos
+  estimatedMin        Float?
+  estimatedMax        Float?
+  scheduledAt         DateTime?
+  receivedAt          DateTime  @default(now())
+  completedAt         DateTime?
   deliveryDescription String?
   deliveryExtraValue  Float?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
 
-  timelineEvents TimelineEvent[]
-  parts          VehiclePart[]
-  approvals      Approval[]
-  media          Media[]
-  chatMessages   ChatMessage[]
-  quoteRequest   QuoteRequest?
-  financialEntries FinancialEntry[]
+  // Processo (Fase 1) — papéis responsáveis, prioridade e previsão de entrega,
+  // distintos de scheduledAt (agendamento) e completedAt (conclusão real).
+  consultantId           String?
+  consultant             User?     @relation("ServiceOrderConsultant", fields: [consultantId], references: [id])
+  estimatorId            String?
+  estimator              User?     @relation("ServiceOrderEstimator", fields: [estimatorId], references: [id])
+  technicianId           String?
+  technician             User?     @relation("ServiceOrderTechnician", fields: [technicianId], references: [id])
+  priority               String    @default("NORMAL") // LOW | NORMAL | HIGH | URGENT
+  deliveryForecastAt     DateTime?
+  deliveryForecastReason String?
+
+  // Posição física do veículo dentro da oficina (Fase 4).
+  currentSectorId String?
+  currentSector   Sector? @relation(fields: [currentSectorId], references: [id])
+
+  // Seguro/sinistro (Fase 1) — presentes só quando o atendimento passa por seguradora.
+  insuranceCompanyId  String?
+  insuranceCompany    InsuranceCompany? @relation(fields: [insuranceCompanyId], references: [id])
+  claimNumber         String?
+  deductibleAmount    Float?
+  serviceType         String?
+  authorizationNumber String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  timelineEvents     TimelineEvent[]
+  parts              VehiclePart[]
+  approvals          Approval[]
+  media              Media[]
+  chatMessages       ChatMessage[]
+  quoteRequest       QuoteRequest?
+  financialEntries   FinancialEntry[]
   accountsReceivable AccountReceivable[]
   invoices           Invoice[]
   appointments       Appointment[]
   commissions        Commission[]
+  estimates          Estimate[]
+  inspections        Inspection[]
+  vehicleDamages     VehicleDamage[]
+  timeEntries        TimeEntry[]
 }
 
 // Pedido de orçamento feito pelo cliente antes de existir uma ordem de serviço.
 // Ao ser aceito pelo mecânico, dá origem a um ServiceOrder com status "SCHEDULED"
 // (agendado, aguardando o cliente levar o veículo).
 model QuoteRequest {
-  id                 String    @id @default(cuid())
+  id                 String        @id @default(cuid())
   customerId         String
-  customer           User      @relation("QuoteRequestCustomer", fields: [customerId], references: [id])
+  customer           User          @relation("QuoteRequestCustomer", fields: [customerId], references: [id])
   vehicleId          String
-  vehicle            Vehicle   @relation(fields: [vehicleId], references: [id])
+  vehicle            Vehicle       @relation(fields: [vehicleId], references: [id])
   problemDescription String
   problemKey         String?
   problemName        String?
   preferredDates     String
-  status             String    @default("PENDING") // PENDING | ACCEPTED | DECLINED
+  status             String        @default("PENDING") // PENDING | ACCEPTED | DECLINED
   mechanicId         String?
-  mechanic           User?     @relation("QuoteRequestMechanic", fields: [mechanicId], references: [id])
+  mechanic           User?         @relation("QuoteRequestMechanic", fields: [mechanicId], references: [id])
   scheduledAt        DateTime?
   initialValue       Float?
   declineReason      String?
-  serviceOrderId     String?   @unique
+  serviceOrderId     String?       @unique
   serviceOrder       ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
-  createdAt          DateTime  @default(now())
+  createdAt          DateTime      @default(now())
   respondedAt        DateTime?
 }
 
@@ -513,24 +563,24 @@ model TimelineEvent {
 }
 
 model VehiclePart {
-  id             String       @id @default(cuid())
-  serviceOrderId String
-  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id])
-  key            String       // motor | freios | suspensao | transmissao | escapamento | eletrica | arcondicionado
-  name           String
-  status         String       @default("NOT_INSPECTED") // NOT_INSPECTED | IN_PROGRESS | WARNING | CRITICAL | DONE
-  note           String?
-  wearLevel      Int?         // 0-100
-  responsibleId  String?
-  responsible    User?        @relation("PartResponsible", fields: [responsibleId], references: [id])
-  warranty       String?      // texto livre (legado, exibido ao cliente)
+  id                String       @id @default(cuid())
+  serviceOrderId    String
+  serviceOrder      ServiceOrder @relation(fields: [serviceOrderId], references: [id])
+  key               String // motor | freios | suspensao | transmissao | escapamento | eletrica | arcondicionado
+  name              String
+  status            String       @default("NOT_INSPECTED") // NOT_INSPECTED | IN_PROGRESS | WARNING | CRITICAL | DONE
+  note              String?
+  wearLevel         Int? // 0-100
+  responsibleId     String?
+  responsible       User?        @relation("PartResponsible", fields: [responsibleId], references: [id])
+  warranty          String? // texto livre (legado, exibido ao cliente)
   // Garantia estruturada — expiresAt é calculado (now + months) no momento em que a
   // garantia é registrada, para permitir consultas de "garantias vencendo" sem recalcular.
-  warrantyMonths   Int?
-  warrantyStartAt  DateTime?
+  warrantyMonths    Int?
+  warrantyStartAt   DateTime?
   warrantyExpiresAt DateTime?
-  updatedAt      DateTime     @updatedAt
-  createdAt      DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  createdAt         DateTime     @default(now())
 
   media     Media[]
   approvals Approval[]
@@ -555,70 +605,310 @@ model Approval {
   status         String       @default("PENDING") // PENDING | APPROVED | REJECTED
   responseNote   String?
   stockAppliedAt DateTime?
-  createdAt      DateTime     @default(now())
-  respondedAt    DateTime?
 
-  media      Media[]
-  partUsages ProblemPartUsage[]
+  // INITIAL (problema do orçamento original) | SUPPLEMENT (complemento de mão de
+  // obra pedido depois) — mesmo fluxo de aprovação, só filtrado por kind nas telas.
+  kind          String   @default("INITIAL")
+  justification String?
+  extraHours    Float?
+  serviceId     String?
+  service       Service? @relation(fields: [serviceId], references: [id])
+
+  createdAt   DateTime  @default(now())
+  respondedAt DateTime?
+
+  media            Media[]
+  partUsages       ProblemPartUsage[]
   financialEntries FinancialEntry[]
-  commission Commission?
+  commission       Commission?
+  estimateItems    EstimateItem[]
 }
 
 model ProblemPartUsage {
-  id              String        @id @default(cuid())
-  approvalId      String
-  approval        Approval      @relation(fields: [approvalId], references: [id], onDelete: Cascade)
-  inventoryPartId String
-  inventoryPart   InventoryPart @relation(fields: [inventoryPartId], references: [id])
-  quantity        Int
+  id               String        @id @default(cuid())
+  approvalId       String
+  approval         Approval      @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+  inventoryPartId  String
+  inventoryPart    InventoryPart @relation(fields: [inventoryPartId], references: [id])
+  quantity         Int
   unitCostSnapshot Float
-  createdAt       DateTime      @default(now())
+  createdAt        DateTime      @default(now())
 
   financialEntries FinancialEntry[]
 }
 
 model FinancialEntry {
-  id              String         @id @default(cuid())
-  type            String         // INCOME | EXPENSE
+  id              String            @id @default(cuid())
+  type            String // INCOME | EXPENSE
   category        String
   description     String
   amount          Float
   serviceOrderId  String?
-  serviceOrder    ServiceOrder?  @relation(fields: [serviceOrderId], references: [id])
+  serviceOrder    ServiceOrder?     @relation(fields: [serviceOrderId], references: [id])
   approvalId      String?
-  approval        Approval?      @relation(fields: [approvalId], references: [id])
+  approval        Approval?         @relation(fields: [approvalId], references: [id])
   inventoryPartId String?
-  inventoryPart   InventoryPart? @relation(fields: [inventoryPartId], references: [id])
+  inventoryPart   InventoryPart?    @relation(fields: [inventoryPartId], references: [id])
   partUsageId     String?
   partUsage       ProblemPartUsage? @relation(fields: [partUsageId], references: [id])
-  occurredAt      DateTime       @default(now())
-  createdAt       DateTime       @default(now())
+  occurredAt      DateTime          @default(now())
+  createdAt       DateTime          @default(now())
 }
 
 model Media {
-  id              String         @id @default(cuid())
-  serviceOrderId  String
-  serviceOrder    ServiceOrder   @relation(fields: [serviceOrderId], references: [id])
-  timelineEventId String?
-  timelineEvent   TimelineEvent? @relation(fields: [timelineEventId], references: [id])
-  partId          String?
-  part            VehiclePart?   @relation(fields: [partId], references: [id])
-  approvalId      String?
-  approval        Approval?      @relation(fields: [approvalId], references: [id])
-  url             String
-  type            String         // PHOTO | VIDEO | AUDIO | DOCUMENT
-  label           String?
-  isDeliveryPhoto Boolean        @default(false)
-  createdAt       DateTime       @default(now())
+  id                String           @id @default(cuid())
+  serviceOrderId    String
+  serviceOrder      ServiceOrder     @relation(fields: [serviceOrderId], references: [id])
+  timelineEventId   String?
+  timelineEvent     TimelineEvent?   @relation(fields: [timelineEventId], references: [id])
+  partId            String?
+  part              VehiclePart?     @relation(fields: [partId], references: [id])
+  approvalId        String?
+  approval          Approval?        @relation(fields: [approvalId], references: [id])
+  inspectionId      String?
+  inspection        Inspection?      @relation(fields: [inspectionId], references: [id])
+  inspectionIssueId String?
+  inspectionIssue   InspectionIssue? @relation(fields: [inspectionIssueId], references: [id])
+  vehicleDamageId   String?
+  vehicleDamage     VehicleDamage?   @relation(fields: [vehicleDamageId], references: [id])
+  url               String
+  type              String // PHOTO | VIDEO | AUDIO | DOCUMENT
+  label             String?
+  isDeliveryPhoto   Boolean          @default(false)
+  createdAt         DateTime         @default(now())
 }
 
 model ChatMessage {
   id             String       @id @default(cuid())
   serviceOrderId String
   serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id])
-  senderRole     String       // CUSTOMER | MECHANIC
+  senderRole     String // CUSTOMER | MECHANIC
   senderName     String
   body           String?
   attachmentUrl  String?
   createdAt      DateTime     @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Fase 1-8 — módulos incorporados do fluxo SIGMA (seguradoras, vistorias,
+// orçamento formal, setor físico, apontamento de horas, auditoria, alertas,
+// documentos). Ver prompt de implementação para o mapeamento completo.
+// ---------------------------------------------------------------------------
+
+model InsuranceCompany {
+  id          String   @id @default(cuid())
+  legalName   String
+  tradeName   String?
+  cnpj        String?
+  addressLine String?
+  city        String?
+  state       String?
+  phone       String?
+  email       String?
+  contactName String?
+  accredited  Boolean  @default(false)
+  active      Boolean  @default(true)
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  serviceOrders ServiceOrder[]
+  estimates     Estimate[]
+  inspections   Inspection[]
+}
+
+// Localização física do veículo dentro da oficina (pátio, funilaria, mecânica...).
+// Catálogo customizável por loja; active=false em vez de excluir setores em uso.
+model Sector {
+  id        String   @id @default(cuid())
+  storeId   String?
+  store     Store?   @relation(fields: [storeId], references: [id])
+  name      String
+  isSystem  Boolean  @default(false)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  serviceOrders ServiceOrder[]
+}
+
+// Orçamento formal (documento) — agrega os Approval/ProblemPartUsage já existentes
+// da OS em vez de duplicar o cálculo de peças; EstimateItem referencia o Approval
+// de origem quando existir. status espelha o ciclo de aprovação do SIGMA.
+model Estimate {
+  id                 String            @id @default(cuid())
+  code               String            @unique // ex: ORC-2026-00001
+  serviceOrderId     String
+  serviceOrder       ServiceOrder      @relation(fields: [serviceOrderId], references: [id])
+  insuranceCompanyId String?
+  insuranceCompany   InsuranceCompany? @relation(fields: [insuranceCompanyId], references: [id])
+  status             String            @default("DRAFT")
+  // DRAFT | AWAITING_APPROVAL | APPROVED | PARTIALLY_APPROVED | REJECTED |
+  // SUPPLEMENT_REQUESTED | CANCELLED | CONVERTED
+  validUntil         DateTime?
+  laborTotal         Float             @default(0)
+  partsTotal         Float             @default(0)
+  materialsTotal     Float             @default(0)
+  thirdPartyTotal    Float             @default(0)
+  discountAmount     Float             @default(0)
+  taxAmount          Float             @default(0)
+  deductibleAmount   Float             @default(0)
+  totalAmount        Float             @default(0)
+  notes              String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  items EstimateItem[]
+}
+
+model EstimateItem {
+  id             String    @id @default(cuid())
+  estimateId     String
+  estimate       Estimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  approvalId     String?
+  approval       Approval? @relation(fields: [approvalId], references: [id])
+  description    String
+  classification String    @default("PENDING") // REPAIR | REPLACE | REUSE | PENDING
+  quantity       Float     @default(1)
+  unitValue      Float     @default(0)
+  totalValue     Float     @default(0)
+  createdAt      DateTime  @default(now())
+}
+
+model Inspection {
+  id                 String            @id @default(cuid())
+  serviceOrderId     String
+  serviceOrder       ServiceOrder      @relation(fields: [serviceOrderId], references: [id])
+  insuranceCompanyId String?
+  insuranceCompany   InsuranceCompany? @relation(fields: [insuranceCompanyId], references: [id])
+  inspectorId        String?
+  inspector          User?             @relation("InspectionInspector", fields: [inspectorId], references: [id])
+  scheduledAt        DateTime?
+  location           String?
+  type               String?
+  status             String            @default("TO_SCHEDULE")
+  // TO_SCHEDULE | SCHEDULED | DONE | RESCHEDULED | CANCELLED | ADJUSTMENT_PENDING
+  result             String?
+  notes              String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  issues InspectionIssue[]
+  media  Media[]
+}
+
+model InspectionIssue {
+  id            String     @id @default(cuid())
+  inspectionId  String
+  inspection    Inspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  item          String
+  description   String?
+  responsibleId String?
+  responsible   User?      @relation("InspectionIssueResponsible", fields: [responsibleId], references: [id])
+  dueDate       DateTime?
+  status        String     @default("OPEN") // OPEN | IN_PROGRESS | RESOLVED
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  media Media[]
+}
+
+// Dano preexistente registrado no checklist de entrada — parte do laudo de
+// entrada, separado dos problemas encontrados durante o reparo (VehiclePart).
+model VehicleDamage {
+  id             String       @id @default(cuid())
+  serviceOrderId String
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id])
+  description    String
+  location       String?
+  authorId       String?
+  author         User?        @relation("VehicleDamageAuthor", fields: [authorId], references: [id])
+  createdAt      DateTime     @default(now())
+
+  media Media[]
+}
+
+// Catálogo de serviços — referência opcional em Approval/apontamento de horas,
+// não obrigatória (mantém o fluxo atual de descrição livre funcionando).
+model Service {
+  id              String   @id @default(cuid())
+  code            String?  @unique
+  category        String?
+  name            String
+  description     String?
+  standardTimeMin Int?
+  hourlyRate      Float?
+  standardPrice   Float?
+  sector          String?
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  approvals   Approval[]
+  timeEntries TimeEntry[]
+}
+
+// Apontamento de horas por funcionário — usado para comparar horas previstas
+// (Service.standardTimeMin) x realizadas e alimentar o painel de capacidade.
+model TimeEntry {
+  id             String        @id @default(cuid())
+  employeeId     String
+  employee       User          @relation("TimeEntryEmployee", fields: [employeeId], references: [id])
+  serviceOrderId String?
+  serviceOrder   ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
+  serviceId      String?
+  service        Service?      @relation(fields: [serviceId], references: [id])
+  sector         String?
+  startedAt      DateTime      @default(now())
+  pausedAt       DateTime?
+  resumedAt      DateTime?
+  endedAt        DateTime?
+  pausedMinutes  Int           @default(0)
+  status         String        @default("RUNNING") // RUNNING | PAUSED | DONE
+  notes          String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+// Log de auditoria técnica/administrativa — distinto do TimelineEvent (que é
+// histórico de negócio voltado ao cliente). before/after guardam snapshot JSON.
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation("AuditLogActor", fields: [userId], references: [id])
+  action    String // CREATE | UPDATE | DELETE | STATUS_CHANGE
+  entity    String // "ServiceOrder" | "Estimate" | "InventoryPart" ...
+  entityId  String
+  before    String?
+  after     String?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+}
+
+// Alerta gerado por regra (OS parada, complemento pendente, estoque baixo...).
+// channel prepara integração futura de envio real (SMS/WHATSAPP já existe em
+// NOTIFICATION_CHANNELS) sem implementar o envio agora.
+model Notification {
+  id        String   @id @default(cuid())
+  type      String
+  entity    String?
+  entityId  String?
+  message   String
+  channel   String?
+  read      Boolean  @default(false)
+  userId    String?
+  user      User?    @relation("NotificationRecipient", fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+// Template de documento padronizado (autorização, recibo, termo de entrega...).
+// bodyHtml usa placeholders {{cliente.nome}} etc., preenchidos na geração.
+model DocumentTemplate {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  name      String
+  bodyHtml  String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

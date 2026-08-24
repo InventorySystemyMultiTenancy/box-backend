@@ -64,6 +64,14 @@ async function main() {
     { resource: "commissions", action: "manage" },
     { resource: "stores", action: "view" },
     { resource: "stores", action: "manage" },
+    // Gaps SIGMA (fases 1-8) — módulos-catálogo administrados via Cargos/Permissões,
+    // igual suppliers/purchases. Estimate/Inspection/TimeEntry/Audit/Alertas/Documentos
+    // seguem o padrão legado requireRole(MECHANIC, ADMIN) — mesma convenção do fluxo de OS.
+    { resource: "insurance", action: "view" },
+    { resource: "insurance", action: "manage" },
+    { resource: "sectors", action: "manage" },
+    { resource: "services-catalog", action: "view" },
+    { resource: "services-catalog", action: "manage" },
   ];
   const permissions = await Promise.all(
     permissionsCatalog.map((p) => prisma.permission.create({ data: p }))

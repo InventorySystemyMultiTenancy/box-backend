@@ -7,6 +7,7 @@ import { emitToOrder } from "@/sockets";
 import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
 import { upload, persistUploadedFile } from "@/middleware/upload";
+import { recordAudit } from "@/services/audit.service";
 
 export const serviceOrdersRouter = Router();
 
@@ -22,6 +23,11 @@ const orderInclude = {
     include: { media: true, partUsages: { include: { inventoryPart: true } } },
   },
   media: { orderBy: { createdAt: "desc" as const } },
+  consultant: { select: { id: true, name: true } },
+  estimator: { select: { id: true, name: true } },
+  technician: { select: { id: true, name: true } },
+  currentSector: true,
+  insuranceCompany: true,
 };
 
 function hidePricesForMechanic<T extends { approvals?: any[]; estimatedMin?: number | null; estimatedMax?: number | null; deliveryExtraValue?: number | null }>(order: T, role: string): T {
@@ -48,8 +54,17 @@ function hidePricesForMechanic<T extends { approvals?: any[]; estimatedMin?: num
 serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const isStaff = req.user!.role === "MECHANIC" || req.user!.role === "ADMIN";
   const storeId = typeof req.query.storeId === "string" ? req.query.storeId : undefined;
+  const currentSectorId = typeof req.query.sectorId === "string" ? req.query.sectorId : undefined;
+  const priority = typeof req.query.priority === "string" ? req.query.priority : undefined;
+  const insuranceCompanyId = typeof req.query.insuranceCompanyId === "string" ? req.query.insuranceCompanyId : undefined;
   const orders = await prisma.serviceOrder.findMany({
-    where: { ...(isStaff ? {} : { vehicle: { ownerId: req.user!.id } }), ...(storeId ? { storeId } : {}) },
+    where: {
+      ...(isStaff ? {} : { vehicle: { ownerId: req.user!.id } }),
+      ...(storeId ? { storeId } : {}),
+      ...(currentSectorId ? { currentSectorId } : {}),
+      ...(priority ? { priority } : {}),
+      ...(insuranceCompanyId ? { insuranceCompanyId } : {}),
+    },
     include: orderInclude,
     orderBy: { createdAt: "desc" },
   });
@@ -97,6 +112,73 @@ serviceOrdersRouter.get("/:id", requireAuth, async (req: AuthedRequest<{ id: str
   res.json({ order: hidePricesForMechanic(order, req.user!.role) });
 });
 
+const processSchema = z.object({
+  consultantId: z.string().nullable().optional(),
+  estimatorId: z.string().nullable().optional(),
+  technicianId: z.string().nullable().optional(),
+  priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]).optional(),
+  deliveryForecastAt: z.string().datetime().nullable().optional(),
+  deliveryForecastReason: z.string().nullable().optional(),
+  currentSectorId: z.string().nullable().optional(),
+  insuranceCompanyId: z.string().nullable().optional(),
+  claimNumber: z.string().nullable().optional(),
+  deductibleAmount: z.coerce.number().nullable().optional(),
+  serviceType: z.string().nullable().optional(),
+  authorizationNumber: z.string().nullable().optional(),
+});
+
+// Campos de processo (Fase 1 do gap SIGMA): consultor/orçamentista/técnico, prioridade,
+// previsão de entrega, setor físico e dados de seguro/sinistro. Distinto de /status
+// (ciclo operacional) e /finalize (entrega) — não sobrepõe as rotas já existentes.
+serviceOrdersRouter.patch("/:id/process", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = processSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+  const before = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
+  if (!before) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+
+  const { deliveryForecastAt, ...rest } = parsed.data;
+  const events: { title: string; description?: string }[] = [];
+
+  if (rest.currentSectorId !== undefined && rest.currentSectorId !== before.currentSectorId) {
+    const [fromSector, toSector] = await Promise.all([
+      before.currentSectorId ? prisma.sector.findUnique({ where: { id: before.currentSectorId } }) : null,
+      rest.currentSectorId ? prisma.sector.findUnique({ where: { id: rest.currentSectorId } }) : null,
+    ]);
+    events.push({
+      title: "Veículo mudou de setor",
+      description: `${fromSector?.name ?? "Sem setor"} → ${toSector?.name ?? "Sem setor"}`,
+    });
+  }
+  if (deliveryForecastAt !== undefined && String(deliveryForecastAt) !== String(before.deliveryForecastAt?.toISOString() ?? null)) {
+    events.push({
+      title: "Previsão de entrega alterada",
+      description: [
+        deliveryForecastAt ? `Nova previsão: ${new Date(deliveryForecastAt).toLocaleString("pt-BR")}` : "Previsão removida",
+        rest.deliveryForecastReason ? `Motivo: ${rest.deliveryForecastReason}` : undefined,
+      ]
+        .filter(Boolean)
+        .join(" — "),
+    });
+  }
+
+  const order = await prisma.$transaction(async (tx) => {
+    const updated = await tx.serviceOrder.update({
+      where: { id: req.params.id },
+      data: { ...rest, ...(deliveryForecastAt !== undefined ? { deliveryForecastAt: deliveryForecastAt ? new Date(deliveryForecastAt) : null } : {}) },
+    });
+    for (const event of events) {
+      await tx.timelineEvent.create({
+        data: { serviceOrderId: updated.id, title: event.title, description: event.description, authorId: req.user!.id },
+      });
+    }
+    return updated;
+  });
+
+  if (events.length) emitToOrder(order.id, "timeline:new", {});
+  res.json({ order });
+});
+
 const statusSchema = z.object({
   status: z.enum(SERVICE_ORDER_STATUSES),
   progress: z.number().min(0).max(100).optional(),
@@ -115,6 +197,7 @@ serviceOrdersRouter.patch(
       return res.status(400).json({ error: "Use /api/service-orders/:id/finalize para finalizar e entregar o veículo." });
     }
 
+    const before = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
     const order = await prisma.$transaction(async (tx) => {
       const order = await tx.serviceOrder.update({
         where: { id: req.params.id },
@@ -122,6 +205,15 @@ serviceOrdersRouter.patch(
       });
 
       return order;
+    });
+
+    await recordAudit({
+      userId: req.user!.id,
+      action: "STATUS_CHANGE",
+      entity: "ServiceOrder",
+      entityId: order.id,
+      before: { status: before?.status },
+      after: { status: order.status },
     });
 
     emitToOrder(order.id, "status:update", { orderId: order.id, status: order.status, progress: order.progress });

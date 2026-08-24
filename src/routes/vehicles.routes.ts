@@ -29,6 +29,11 @@ const createVehicleSchema = z.object({
   engine: z.string().optional(),
   plate: z.string().optional(),
   mileage: z.number().int().min(0).default(0),
+  chassi: z.string().optional(),
+  renavam: z.string().optional(),
+  color: z.string().optional(),
+  fuelType: z.string().optional(),
+  version: z.string().optional(),
 });
 
 vehiclesRouter.post("/", requireAuth, async (req: AuthedRequest, res) => {
@@ -39,6 +44,17 @@ vehiclesRouter.post("/", requireAuth, async (req: AuthedRequest, res) => {
     data: { ...parsed.data, ownerId: req.user!.id },
   });
   res.status(201).json({ vehicle });
+});
+
+vehiclesRouter.patch("/:id", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = createVehicleSchema.partial().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+  const existing = await prisma.vehicle.findUnique({ where: { id: req.params.id } });
+  if (!existing) return res.status(404).json({ error: "Veículo não encontrado." });
+
+  const vehicle = await prisma.vehicle.update({ where: { id: req.params.id }, data: parsed.data });
+  res.json({ vehicle });
 });
 
 vehiclesRouter.get("/:id", requireAuth, async (req: AuthedRequest<{ id: string }>, res) => {

@@ -24,6 +24,12 @@ const createApprovalSchema = z.object({
   title: z.string().min(1),
   description: z.string().min(1),
   estimatedValue: z.number().optional(),
+  // kind=SUPPLEMENT identifica um complemento de mão de obra pedido depois do
+  // orçamento inicial — mesmo fluxo de aprovação, só filtrado nas telas (Fase 2).
+  kind: z.enum(["INITIAL", "SUPPLEMENT"]).optional(),
+  justification: z.string().optional(),
+  extraHours: z.number().optional(),
+  serviceId: z.string().optional(),
 });
 
 approvalsRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ orderId: string }>, res) => {
