@@ -305,8 +305,12 @@ serviceOrdersRouter.patch(
         where: { serviceOrderId: order.id, type: "INCOME", category: "PROJETO" },
       });
       if (!existingIncome) {
+        // Receita da oficina = trabalho de fato concluído (peça com status DONE), não
+        // só o que o cliente aprovou formalmente — mão de obra e peças de um reparo
+        // finalizado (inclusive sem resposta do cliente) entram como lucro da Reblind
+        // igual a qualquer outro, já que o veículo só chega à entrega com o serviço feito.
         const approvals = await tx.approval.findMany({
-          where: { serviceOrderId: order.id, status: "APPROVED" },
+          where: { serviceOrderId: order.id, part: { status: "DONE" } },
         });
         const total = approvals.reduce((sum, approval) => sum + (approval.estimatedValue ?? 0), 0) || order.estimatedMin || 0;
         await tx.financialEntry.create({
