@@ -57,9 +57,13 @@ serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const currentSectorId = typeof req.query.sectorId === "string" ? req.query.sectorId : undefined;
   const priority = typeof req.query.priority === "string" ? req.query.priority : undefined;
   const insuranceCompanyId = typeof req.query.insuranceCompanyId === "string" ? req.query.insuranceCompanyId : undefined;
+  const includeArchived = req.query.includeArchived === "true";
   const orders = await prisma.serviceOrder.findMany({
     where: {
       ...(isStaff ? {} : { vehicle: { ownerId: req.user!.id } }),
+      // Projeto com baixa dada some da lista/kanban de projetos em andamento (staff),
+      // mas segue acessível por GET /:id, histórico do cliente e busca — nunca é apagado.
+      ...(isStaff && !includeArchived ? { archivedAt: null } : {}),
       ...(storeId ? { storeId } : {}),
       ...(currentSectorId ? { currentSectorId } : {}),
       ...(priority ? { priority } : {}),
@@ -347,3 +351,26 @@ serviceOrdersRouter.patch(
     res.json({ order });
   }
 );
+
+// "Dar baixa": admin encerra o projeto independente de qualquer aprovação/confirmação
+// do cliente — a única exigência é que o veículo já esteja pronto para retirada. O
+// projeto some da lista/kanban de projetos em andamento (ver GET /), mas continua
+// salvo como concluído (acessível por código/histórico) e a garantia das peças, que
+// não depende do status da ordem, segue funcionando normalmente.
+serviceOrdersRouter.patch("/:id/archive", requireAuth, requireRole("ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const existing = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
+  if (!existing) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+  if (existing.status !== "READY_FOR_PICKUP") {
+    return res.status(409).json({ error: "Só é possível dar baixa em um projeto pronto para retirada." });
+  }
+  if (existing.archivedAt) return res.status(409).json({ error: "Este projeto já está com baixa dada." });
+
+  const order = await prisma.serviceOrder.update({
+    where: { id: req.params.id },
+    data: { archivedAt: new Date() },
+    include: orderInclude,
+  });
+
+  emitToOrder(order.id, "service-order:archived", { orderId: order.id, archivedAt: order.archivedAt });
+  res.json({ order: hidePricesForMechanic(order, req.user!.role) });
+});

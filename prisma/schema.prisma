@@ -479,6 +479,10 @@ model ServiceOrder {
   completedAt         DateTime?
   deliveryDescription String?
   deliveryExtraValue  Float?
+  // "Dar baixa" — admin encerra o projeto mesmo sem confirmação do cliente. Some da
+  // lista/kanban de projetos em andamento, mas o registro (e a garantia das peças,
+  // independente disso) continua acessível normalmente.
+  archivedAt          DateTime?
 
   // Processo (Fase 1) — papéis responsáveis, prioridade e previsão de entrega,
   // distintos de scheduledAt (agendamento) e completedAt (conclusão real).
