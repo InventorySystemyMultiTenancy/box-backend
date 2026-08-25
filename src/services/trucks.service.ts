@@ -120,3 +120,18 @@ export async function listTrips(truckId: string) {
     include: { driver: { select: { id: true, name: true } } },
   });
 }
+
+// Histórico de pilotagens/devoluções de todos os caminhões — aba "Movimentações".
+// Admin vê tudo; demais usuários só veem os caminhões em que estão designados,
+// espelhando o mesmo recorte já usado em listTrucksAssignedTo.
+export async function listAllTripMovements(role: string, userId: string, take = 100) {
+  return prisma.truckTrip.findMany({
+    where: role === "ADMIN" ? {} : { truck: { assignedEmployeeId: userId } },
+    orderBy: { startedAt: "desc" },
+    take,
+    include: {
+      driver: { select: { id: true, name: true } },
+      truck: { select: { id: true, plate: true, brand: true, model: true } },
+    },
+  });
+}

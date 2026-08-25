@@ -12,6 +12,7 @@ import {
   startTrip,
   finishTrip,
   listTrips,
+  listAllTripMovements,
   TruckError,
 } from "@/services/trucks.service";
 
@@ -22,6 +23,13 @@ export const trucksRouter = Router();
 trucksRouter.get("/assigned-to-me", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
   const trucks = await listTrucksAssignedTo(req.user!.id);
   res.json({ trucks });
+});
+
+// Histórico de pilotagens/devoluções de todos os caminhões (aba "Movimentações") —
+// precisa vir antes de "/:id" para "movements" não ser interpretado como um id.
+trucksRouter.get("/movements", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
+  const trips = await listAllTripMovements(req.user!.role, req.user!.id);
+  res.json({ trips });
 });
 
 trucksRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
