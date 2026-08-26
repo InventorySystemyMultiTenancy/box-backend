@@ -51,6 +51,7 @@ model User {
   notifications               Notification[]    @relation("NotificationRecipient")
   trucksAssigned              Truck[]           @relation("TruckAssignedEmployee")
   truckTrips                  TruckTrip[]       @relation("TruckTripDriver")
+  truckRefuelings             TruckRefueling[]  @relation("TruckRefuelingDriver")
 }
 
 // Comissão de mecânico sobre um reparo aprovado — uma por Approval (evita duplicar
@@ -934,12 +935,16 @@ model Truck {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  trips TruckTrip[]
+  trips      TruckTrip[]
+  refuelings TruckRefueling[]
 }
 
-// Uma "pilotagem" do caminhão: do início (km/combustível/estado, foto opcional) até
-// a devolução (km/combustível/estado, foto OBRIGATÓRIA dos veículos entregues dentro
-// do caminhão) — histórico de uso para controlar caminhões alugados.
+// Uma "pilotagem" do caminhão: do início (km/combustível/estado, foto do painel
+// OBRIGATÓRIA — a mesma foto é lida por IA para preencher o km) até a devolução
+// (km/combustível/estado, foto OBRIGATÓRIA dos veículos entregues dentro do
+// caminhão, também lida por IA quando for uma foto do painel) — histórico de uso
+// para controlar caminhões alugados. startPhotoUrl continua opcional no banco de
+// dados (colunas antigas já gravadas sem foto) — a obrigatoriedade é aplicada na rota.
 model TruckTrip {
   id             String    @id @default(cuid())
   truckId        String
@@ -960,4 +965,31 @@ model TruckTrip {
   notes          String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+
+  refuelings TruckRefueling[]
+}
+
+// Abastecimento feito durante uma pilotagem: foto da bomba OBRIGATÓRIA (lida por IA
+// para preencher valor pago e litros), km atual informado pelo motorista. referenceKm
+// é a base do cálculo de consumo (km de início da pilotagem, ou o km do abastecimento
+// anterior dentro da mesma pilotagem, se houver mais de um) — kmPerLiter e o
+// julgamento de consumo/preço fora do padrão (calculados no service, não gravados
+// como "alerta" fixo) só aparecem para o admin.
+model TruckRefueling {
+  id            String    @id @default(cuid())
+  truckId       String
+  truck         Truck     @relation(fields: [truckId], references: [id])
+  tripId        String
+  trip          TruckTrip @relation(fields: [tripId], references: [id])
+  driverId      String
+  driver        User      @relation("TruckRefuelingDriver", fields: [driverId], references: [id])
+  photoUrl      String
+  currentKm     Int
+  referenceKm   Int
+  liters        Float
+  amountPaid    Float
+  pricePerLiter Float?
+  kmPerLiter    Float?
+  notes         String?
+  createdAt     DateTime  @default(now())
 }
