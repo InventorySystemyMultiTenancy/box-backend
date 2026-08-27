@@ -58,6 +58,10 @@ const createSchema = z.object({
   discountAmount: z.number().min(0).optional(),
   taxAmount: z.number().min(0).optional(),
   issueDate: z.string().optional(),
+  // Só usados quando paymentMethod é "boleto" — geram as contas a pagar (uma por
+  // mês) a partir de dueDate, ligadas a esta nota.
+  installments: z.coerce.number().int().min(1).max(60).optional(),
+  dueDate: z.string().optional(),
 });
 
 invoicesRouter.get("/", requireAuth, requirePermission("invoices", "view"), async (req, res) => {
@@ -69,8 +73,13 @@ invoicesRouter.post("/", requireAuth, requirePermission("invoices", "manage"), a
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
-  const invoice = await createInvoiceDraft(parsed.data);
-  res.status(201).json({ invoice });
+  try {
+    const invoice = await createInvoiceDraft(parsed.data);
+    res.status(201).json({ invoice });
+  } catch (err) {
+    if (err instanceof InvoiceError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
 });
 
 invoicesRouter.post("/:id/issue", requireAuth, requirePermission("invoices", "manage"), async (req: AuthedRequest<{ id: string }>, res) => {

@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { parsePageParams, paginated } from "@/lib/pagination";
 import { NFeProvider } from "@/services/fiscal/nfe-provider";
 import { MockNFeProvider } from "@/services/fiscal/mock-provider";
+import { createAccountsPayable } from "@/services/accounts-payable.service";
 
 export class InvoiceError extends Error {
   constructor(message: string, public status: number) {
@@ -30,6 +31,14 @@ export interface InvoiceInput {
   discountAmount?: number;
   taxAmount?: number;
   issueDate?: string;
+  // Só usados quando paymentMethod é "boleto" — geram N contas a pagar em meses
+  // consecutivos a partir de dueDate (ver services/accounts-payable.service.ts).
+  installments?: number;
+  dueDate?: string;
+}
+
+function isBoleto(paymentMethod?: string) {
+  return Boolean(paymentMethod?.trim().toLowerCase().includes("boleto"));
 }
 
 // Ponto único de troca do gateway fiscal — plugar um provider real aqui quando a
@@ -49,7 +58,11 @@ export async function listInvoices(query: Record<string, unknown>) {
   const [items, total] = await Promise.all([
     prisma.invoice.findMany({
       where,
-      include: { client: true, serviceOrder: { select: { id: true, code: true } } },
+      include: {
+        client: true,
+        serviceOrder: { select: { id: true, code: true } },
+        payables: { orderBy: { dueDate: "asc" } },
+      },
       orderBy: { createdAt: "desc" },
       skip: pageParams.skip,
       take: pageParams.take,
@@ -62,9 +75,16 @@ export async function listInvoices(query: Record<string, unknown>) {
 
 // Se `number` vier preenchido, a nota já existe fisicamente (digitada ou lida de uma
 // foto) — nasce ISSUED. Caso contrário, nasce DRAFT para ser emitida depois via /issue.
+// Quando a forma de pagamento é "boleto", também gera as parcelas como contas a
+// pagar (uma por mês, a partir de dueDate) já ligadas a esta nota.
 export async function createInvoiceDraft(input: InvoiceInput) {
+  const boleto = isBoleto(input.paymentMethod);
+  if (boleto && !input.dueDate) {
+    throw new InvoiceError("Informe a data de vencimento do primeiro boleto.", 400);
+  }
+
   const isExisting = Boolean(input.number);
-  return prisma.invoice.create({
+  const invoice = await prisma.invoice.create({
     data: {
       type: input.type,
       status: isExisting ? "ISSUED" : "DRAFT",
@@ -88,6 +108,21 @@ export async function createInvoiceDraft(input: InvoiceInput) {
       provider: isExisting ? "MANUAL" : provider.name,
     },
   });
+
+  if (boleto && input.dueDate) {
+    await createAccountsPayable({
+      description: input.description || `Nota fiscal ${input.number ?? invoice.id}`,
+      category: "FORNECEDOR",
+      payeeName: input.issuerName || input.description || "Fornecedor",
+      amount: input.totalAmount,
+      dueDate: input.dueDate,
+      paymentMethod: input.paymentMethod,
+      installments: input.installments,
+      invoiceId: invoice.id,
+    });
+  }
+
+  return prisma.invoice.findUnique({ where: { id: invoice.id }, include: { payables: { orderBy: { dueDate: "asc" } } } });
 }
 
 export async function issueInvoice(id: string) {

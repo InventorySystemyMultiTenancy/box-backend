@@ -134,6 +134,11 @@ model AccountPayable {
   purchaseOrder     PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
   supplierId        String?
   supplier          Supplier?      @relation(fields: [supplierId], references: [id])
+  // Preenchido quando esta conta foi gerada automaticamente a partir de um boleto de
+  // nota fiscal (ver Invoice.payables) — mesmo padrão de installmentNumber/Total/groupId
+  // já usado para pedidos de compra parcelados.
+  invoiceId         String?
+  invoice           Invoice?       @relation(fields: [invoiceId], references: [id])
   installmentNumber Int?
   installmentTotal  Int?
   groupId           String?
@@ -208,6 +213,10 @@ model Invoice {
   errorMessage        String?
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
+
+  // Boletos gerados a partir desta nota (paymentMethod "Boleto" + quantidade de
+  // parcelas informada no cadastro/leitura por IA) — ver AccountPayable.invoiceId.
+  payables AccountPayable[]
 }
 
 // Venda de balcão (PDV) — venda avulsa de peças sem OS vinculada, paga na hora.

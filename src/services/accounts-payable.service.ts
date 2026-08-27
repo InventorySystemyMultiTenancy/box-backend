@@ -18,6 +18,9 @@ export interface AccountPayableInput {
   bankAccountId?: string;
   notes?: string;
   installments?: number;
+  // Preenchido quando as parcelas nascem de um boleto de nota fiscal (ver
+  // invoices.service.ts) — liga cada AccountPayable de volta à Invoice de origem.
+  invoiceId?: string;
 }
 
 export interface PayInput {
@@ -51,6 +54,7 @@ export async function createAccountsPayable(input: AccountPayableInput) {
       installmentNumber: installments > 1 ? i + 1 : undefined,
       installmentTotal: installments > 1 ? installments : undefined,
       groupId,
+      invoiceId: input.invoiceId,
     };
   });
 
