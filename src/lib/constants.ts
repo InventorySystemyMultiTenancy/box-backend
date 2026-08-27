@@ -174,6 +174,7 @@ export const NOTIFICATION_TYPES = [
   "LOW_STOCK",
   "INSPECTION_TODAY",
   "DELIVERY_TOMORROW",
+  "PAYABLE_OVERDUE",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 

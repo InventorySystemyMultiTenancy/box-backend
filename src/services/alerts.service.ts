@@ -22,7 +22,7 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
   const tomorrowEnd = new Date(tomorrowStart);
   tomorrowEnd.setHours(23, 59, 59, 999);
 
-  const [staleOrders, pendingSupplements, lowStockParts, inspectionsToday, deliveriesTomorrow] = await Promise.all([
+  const [staleOrders, pendingSupplements, lowStockParts, inspectionsToday, deliveriesTomorrow, overduePayables] = await Promise.all([
     prisma.serviceOrder.findMany({
       where: { status: { notIn: ["READY_FOR_PICKUP"] }, updatedAt: { lte: staleThreshold } },
       include: { vehicle: true },
@@ -39,6 +39,11 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
     prisma.serviceOrder.findMany({
       where: { deliveryForecastAt: { gte: tomorrowStart, lte: tomorrowEnd }, status: { notIn: ["READY_FOR_PICKUP"] } },
       include: { vehicle: true },
+    }),
+    // Checa a dueDate diretamente (não confia em status já estar "OVERDUE" — esse
+    // flip só acontece quando a listagem de contas a pagar é consultada).
+    prisma.accountPayable.findMany({
+      where: { status: { notIn: ["PAID", "CANCELLED"] }, dueDate: { lt: now } },
     }),
   ]);
 
@@ -84,6 +89,15 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
       entity: "ServiceOrder",
       entityId: order.id,
       message: `Entrega prevista para amanhã — ${order.code} (${order.vehicle.plate ?? order.vehicle.model}).`,
+    });
+  }
+  for (const payable of overduePayables) {
+    const days = Math.floor((Date.now() - payable.dueDate.getTime()) / (1000 * 60 * 60 * 24));
+    candidates.push({
+      type: "PAYABLE_OVERDUE",
+      entity: "AccountPayable",
+      entityId: payable.id,
+      message: `Conta a pagar vencida há ${days} dia${days === 1 ? "" : "s"} — ${payable.description} (${payable.payeeName}), R$ ${payable.amount.toFixed(2)}.`,
     });
   }
 

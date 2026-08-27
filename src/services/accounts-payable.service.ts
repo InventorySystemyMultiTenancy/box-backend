@@ -72,6 +72,10 @@ export async function listAccountsPayable(query: Record<string, unknown>) {
   const category = typeof query.category === "string" ? query.category : undefined;
   const from = typeof query.from === "string" ? new Date(query.from) : undefined;
   const to = typeof query.to === "string" ? new Date(query.to) : undefined;
+  // "Nome" = fornecedor/beneficiário (payeeName); "número de nota" busca pela nota
+  // fiscal ligada (Invoice.number) — nem toda conta a pagar tem uma nota vinculada.
+  const payeeName = typeof query.payeeName === "string" && query.payeeName.trim() ? query.payeeName.trim() : undefined;
+  const invoiceNumber = typeof query.invoiceNumber === "string" && query.invoiceNumber.trim() ? query.invoiceNumber.trim() : undefined;
 
   await markOverduePayables();
 
@@ -79,12 +83,14 @@ export async function listAccountsPayable(query: Record<string, unknown>) {
     ...(status ? { status } : {}),
     ...(category ? { category } : {}),
     ...(from || to ? { dueDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+    ...(payeeName ? { payeeName: { contains: payeeName, mode: "insensitive" as const } } : {}),
+    ...(invoiceNumber ? { invoice: { number: { contains: invoiceNumber, mode: "insensitive" as const } } } : {}),
   };
 
   const [items, total] = await Promise.all([
     prisma.accountPayable.findMany({
       where,
-      include: { bankAccount: true },
+      include: { bankAccount: true, invoice: { select: { id: true, number: true } } },
       orderBy: { dueDate: "asc" },
       skip: pageParams.skip,
       take: pageParams.take,
