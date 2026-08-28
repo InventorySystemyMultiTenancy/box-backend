@@ -40,6 +40,7 @@ import { alertsRouter } from "@/routes/alerts.routes";
 import { documentTemplatesRouter } from "@/routes/document-templates.routes";
 import { searchRouter } from "@/routes/search.routes";
 import { trucksRouter } from "@/routes/trucks.routes";
+import { teamRouter } from "@/routes/team.routes";
 
 export const app = express();
 
@@ -50,6 +51,7 @@ app.use("/uploads", express.static(path.resolve(process.cwd(), process.env.UPLOA
 app.get("/health", (_req, res) => res.json({ ok: true, service: "box-backend" }));
 
 app.use("/api/auth", authRouter);
+app.use("/api/team", teamRouter);
 app.use("/api/vehicles", vehiclesRouter);
 app.use("/api/service-orders", serviceOrdersRouter);
 app.use("/api/service-orders/:orderId/timeline", timelineRouter);

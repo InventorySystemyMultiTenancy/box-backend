@@ -18,6 +18,7 @@ model User {
   passwordHash   String
   role           String   @default("CUSTOMER") // CUSTOMER | MECHANIC | ADMIN
   phone          String?
+  avatarUrl      String?
   // Percentual de comissão (0.10 = 10%) — só relevante para MECHANIC. Snapshot em
   // Commission.rate no momento da geração, então mudar aqui não afeta comissões já geradas.
   commissionRate Float?

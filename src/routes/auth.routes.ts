@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { signToken } from "@/lib/jwt";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { getEffectivePermissions } from "@/services/permissions.service";
+import { upload, persistUploadedFile } from "@/middleware/upload";
 
 export const authRouter = Router();
 
@@ -128,7 +129,15 @@ authRouter.get("/me/permissions", requireAuth, async (req: AuthedRequest, res) =
   res.json({ permissions: Array.from(effective) });
 });
 
-function toPublicUser(user: { id: string; name: string; email: string; role: string; roleId?: string | null; phone: string | null; commissionRate?: number | null }) {
+authRouter.patch("/me/avatar", requireAuth, upload.single("avatar"), async (req: AuthedRequest, res) => {
+  if (!req.file) return res.status(400).json({ error: "Envie uma imagem." });
+
+  const avatarUrl = await persistUploadedFile(req.file);
+  const user = await prisma.user.update({ where: { id: req.user!.id }, data: { avatarUrl } });
+  res.json({ user: toPublicUser(user) });
+});
+
+function toPublicUser(user: { id: string; name: string; email: string; role: string; roleId?: string | null; phone: string | null; commissionRate?: number | null; avatarUrl?: string | null }) {
   return {
     id: user.id,
     name: user.name,
@@ -137,5 +146,6 @@ function toPublicUser(user: { id: string; name: string; email: string; role: str
     roleId: user.roleId ?? null,
     phone: user.phone,
     commissionRate: user.commissionRate ?? null,
+    avatarUrl: user.avatarUrl ?? null,
   };
 }
