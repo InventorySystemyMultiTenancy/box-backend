@@ -378,3 +378,49 @@ serviceOrdersRouter.patch("/:id/archive", requireAuth, requireRole("ADMIN"), asy
   emitToOrder(order.id, "service-order:archived", { orderId: order.id, archivedAt: order.archivedAt });
   res.json({ order: hidePricesForMechanic(order, req.user!.role) });
 });
+
+// Exclusão definitiva do projeto (diferente de "dar baixa", que só encerra e mantém o
+// histórico). Recusa se já existe qualquer rastro financeiro (comissão, nota fiscal,
+// conta a receber ou lançamento) — nesses casos o projeto já afeta a contabilidade da
+// oficina e não pode simplesmente sumir; use "Dar baixa" para encerrá-lo em vez disso.
+// Sem rastro financeiro, apaga em cascata tudo que só existe em função deste projeto
+// (timeline, peças, aprovações, mídia, chat, orçamentos formais, vistorias, avarias).
+serviceOrdersRouter.delete("/:id", requireAuth, requireRole("ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const { id } = req.params;
+  const existing = await prisma.serviceOrder.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+
+  const [commissions, invoices, receivables, financialEntries] = await Promise.all([
+    prisma.commission.count({ where: { serviceOrderId: id } }),
+    prisma.invoice.count({ where: { serviceOrderId: id } }),
+    prisma.accountReceivable.count({ where: { serviceOrderId: id } }),
+    prisma.financialEntry.count({ where: { serviceOrderId: id } }),
+  ]);
+  if (commissions > 0 || invoices > 0 || receivables > 0 || financialEntries > 0) {
+    return res.status(409).json({
+      error: "Este projeto já tem comissão, nota fiscal, conta a receber ou lançamento financeiro vinculado — não pode ser excluído. Use \"Dar baixa\" para encerrá-lo.",
+    });
+  }
+
+  await recordAudit({
+    userId: req.user!.id,
+    action: "DELETE",
+    entity: "ServiceOrder",
+    entityId: id,
+    before: existing,
+  });
+
+  await prisma.$transaction([
+    prisma.media.deleteMany({ where: { serviceOrderId: id } }),
+    prisma.chatMessage.deleteMany({ where: { serviceOrderId: id } }),
+    prisma.approval.deleteMany({ where: { serviceOrderId: id } }),
+    prisma.vehiclePart.deleteMany({ where: { serviceOrderId: id } }),
+    prisma.estimate.deleteMany({ where: { serviceOrderId: id } }),
+    prisma.inspection.deleteMany({ where: { serviceOrderId: id } }),
+    prisma.vehicleDamage.deleteMany({ where: { serviceOrderId: id } }),
+    prisma.timelineEvent.deleteMany({ where: { serviceOrderId: id } }),
+    prisma.serviceOrder.delete({ where: { id } }),
+  ]);
+
+  res.json({ ok: true });
+});
