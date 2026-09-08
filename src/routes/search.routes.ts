@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole } from "@/middleware/auth";
+import { getSearchAssistance, SearchAssistantError } from "@/services/search-assistant.service";
 
 export const searchRouter = Router();
 
@@ -88,4 +89,20 @@ searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req,
   ]);
 
   res.json({ orders, estimates, users, vehicles, suppliers, parts, trucks, insuranceCompanies });
+});
+
+// Assistente por IA — chamado pelo front só quando a busca acima não encontra nada,
+// pra sugerir um termo alternativo e/ou apontar pra uma aba do sistema. Mesmo provedor
+// de IA já usado nas leituras de foto (OPENAI_API_KEY), só que aqui é texto puro.
+searchRouter.post("/assist", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req, res) => {
+  const q = typeof req.body?.q === "string" ? req.body.q.trim() : "";
+  if (q.length < 2) return res.status(400).json({ error: "Termo de busca inválido." });
+
+  try {
+    const assistance = await getSearchAssistance(q);
+    res.json(assistance);
+  } catch (err) {
+    if (err instanceof SearchAssistantError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
 });
