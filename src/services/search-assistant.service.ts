@@ -15,6 +15,7 @@ export interface SearchAssistAction {
 
 export interface SearchAssistResult {
   message: string;
+  steps: string[] | null;
   suggestedQuery: string | null;
   actions: SearchAssistAction[];
 }
@@ -45,16 +46,23 @@ const KNOWN_ROUTES: SearchAssistAction[] = [
   { path: "/dashboard/perfil", label: "Perfil" },
 ];
 
-const SYSTEM_PROMPT = `Você é o assistente da BOX., um sistema de gestão de oficina mecânica. Um funcionário digitou um termo na busca global do sistema e ela não encontrou nada (a busca cobre: ordens de serviço, orçamentos, usuários/clientes, veículos, fornecedores, peças de estoque, caminhões e seguradoras).
+const SYSTEM_PROMPT = `Você é o assistente da BOX., um sistema de gestão de oficina mecânica. Um funcionário digitou algo na busca global do sistema e ela não encontrou nenhum registro (a busca de registros cobre: ordens de serviço, orçamentos, usuários/clientes, veículos, fornecedores, peças de estoque, caminhões e seguradoras).
 
-Seu trabalho é ajudar essa pessoa. Responda SEMPRE em português, APENAS com um JSON válido, sem markdown, no formato:
+Isso pode significar duas coisas:
+(A) A pessoa estava procurando um registro (cliente, OS, placa, peça...) mas digitou errado ou ele não existe.
+(B) A pessoa não está procurando um registro — está PERGUNTANDO como fazer algo no sistema, ex: "como cadastrar um cliente", "como marcar garantia", "como faço um orçamento", "como funciona o pdv". Nesse caso é uma pergunta de uso, não uma busca.
+
+Se for o caso (B), gere um tutorial curto (3 a 5 passos, objetivos, na ordem em que a pessoa deve clicar/preencher) de como realizar aquilo na aba certa do sistema, e aponte essa aba em "actions". Se for o caso (A), não gere tutorial — só explique/sugira como no comportamento normal.
+
+Responda SEMPRE em português, APENAS com um JSON válido, sem markdown, no formato:
 {
-  "message": "<1-2 frases curtas explicando por que talvez não tenha achado nada e/ou o que a pessoa pode fazer>",
-  "suggestedQuery": "<um termo de busca alternativo mais provável de achar algo, ou null se não houver sugestão melhor>",
+  "message": "<1-2 frases curtas: no caso B, uma introdução ao tutorial; no caso A, por que talvez não achou nada>",
+  "steps": ["<passo 1>", "<passo 2>", "..."] ou null se não for uma pergunta de uso (caso A),
+  "suggestedQuery": "<no caso A, um termo de busca alternativo mais provável de achar algo; null no caso B ou se não houver sugestão melhor>",
   "actions": [{ "path": "<uma das rotas da lista abaixo>", "label": "<label EXATAMENTE como está na lista>" }]
 }
 
-"actions" deve ter no máximo 2 itens, só rotas realmente relevantes pro que a pessoa parece estar procurando — nunca invente uma rota fora da lista. Se nada for claramente relevante, devolva "actions": [].
+"actions" deve ter no máximo 2 itens, só rotas realmente relevantes — nunca invente uma rota fora da lista. Se nada for claramente relevante, devolva "actions": [].
 
 Rotas disponíveis (path — label — o que tem lá):
 - /dashboard — Projetos — kanban das ordens de serviço em andamento
@@ -95,10 +103,10 @@ export async function getSearchAssistance(query: string): Promise<SearchAssistRe
     body: JSON.stringify({
       model: OPENAI_MODEL,
       response_format: { type: "json_object" },
-      max_tokens: 300,
+      max_tokens: 500,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `Termo buscado, sem resultados: "${query}"` },
+        { role: "user", content: `Texto digitado na busca, sem resultados: "${query}"` },
       ],
     }),
   });
@@ -123,6 +131,12 @@ export async function getSearchAssistance(query: string): Promise<SearchAssistRe
   const suggestedQueryRaw = typeof parsed.suggestedQuery === "string" ? parsed.suggestedQuery.trim() : "";
   const suggestedQuery = suggestedQueryRaw && suggestedQueryRaw.toLowerCase() !== query.trim().toLowerCase() ? suggestedQueryRaw : null;
 
+  const rawSteps = Array.isArray(parsed.steps) ? parsed.steps : [];
+  const steps = rawSteps
+    .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    .map((s) => s.trim())
+    .slice(0, 6);
+
   const rawActions = Array.isArray(parsed.actions) ? parsed.actions : [];
   const actions: SearchAssistAction[] = [];
   for (const item of rawActions) {
@@ -133,5 +147,5 @@ export async function getSearchAssistance(query: string): Promise<SearchAssistRe
     if (actions.length >= 2) break;
   }
 
-  return { message, suggestedQuery, actions };
+  return { message, steps: steps.length > 0 ? steps : null, suggestedQuery, actions };
 }
