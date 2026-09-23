@@ -37,6 +37,7 @@ const createRoleSchema = z.object({
 const updateRoleSchema = z.object({
   name: z.string().min(2).optional(),
   description: z.string().optional(),
+  allowedTabs: z.array(z.string()).optional(),
 });
 
 const setPermissionsSchema = z.object({

@@ -21,47 +21,83 @@ function monthKey(date: Date) {
   return date.toISOString().slice(0, 7);
 }
 
-financeRouter.get("/summary", requireAuth, requireRole("ADMIN"), async (_req, res) => {
-  const [entries, partUsages, paidPayables] = await Promise.all([
-    prisma.financialEntry.findMany({ orderBy: { occurredAt: "desc" } }),
+// Venda de balcão (PDV) já lança a margem como FinancialEntry "LUCRO_PDV" — a receita
+// cheia da venda entra à parte, pela conta a receber categoria "PDV" (ver ponto abaixo).
+// Contar as duas contaria a mesma venda duas vezes.
+const PDV_PROFIT_CATEGORY = "LUCRO_PDV";
+const PART_COST_CATEGORY = "PEÇA";
+
+function periodWhere(field: string, from?: string, to?: string) {
+  if (!from && !to) return {};
+  return { [field]: { ...(from ? { gte: new Date(from) } : {}), ...(to ? { lte: new Date(to) } : {}) } };
+}
+
+financeRouter.get("/summary", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const from = typeof req.query.from === "string" ? req.query.from : undefined;
+  const to = typeof req.query.to === "string" ? req.query.to : undefined;
+
+  const [entries, partUsages, paidPayables, receivedReceivables] = await Promise.all([
+    prisma.financialEntry.findMany({
+      where: periodWhere("occurredAt", from, to),
+      include: { createdBy: { select: { id: true, name: true } } },
+      orderBy: { occurredAt: "desc" },
+    }),
     // Custo real de peças gastas em projetos — direto do uso registrado (não depende
     // mais do fluxo (hoje raro) de aprovação do cliente que gerava um FinancialEntry
     // "PEÇA" à parte; problemas reprovados não contam, o resto sim.
     prisma.problemPartUsage.findMany({
-      where: { approval: { status: { not: "REJECTED" } } },
+      where: { approval: { status: { not: "REJECTED" } }, ...periodWhere("createdAt", from, to) },
       select: { quantity: true, unitCostSnapshot: true, createdAt: true },
     }),
     // Toda conta a pagar já paga é saída de caixa: compra de peça para estoque, boleto
     // de nota fiscal, comissão paga, despesa fixa lançada em contas a pagar, etc.
     prisma.accountPayable.findMany({
-      where: { status: "PAID" },
+      where: { status: "PAID", ...periodWhere("paidAt", from, to) },
       select: { amount: true, paidAmount: true, paidAt: true, updatedAt: true },
+    }),
+    // Conta a receber recebida também é entrada — mesma regra já usada no fluxo de
+    // caixa/DRE (getCashFlow/getDRE), replicada aqui pra Resumo e Fluxo de caixa
+    // baterem os mesmos totais.
+    prisma.accountReceivable.findMany({
+      where: { status: "RECEIVED", ...periodWhere("receivedAt", from, to) },
+      select: { amount: true, receivedAmount: true, receivedAt: true, updatedAt: true },
     }),
   ]);
 
-  const income = entries.filter((e) => e.type === "INCOME").reduce((sum, e) => sum + e.amount, 0);
+  const incomeEntries = entries.filter((e) => e.type === "INCOME" && e.category !== PDV_PROFIT_CATEGORY);
+  const receivedTotal = receivedReceivables.reduce((sum, r) => sum + (r.receivedAmount ?? r.amount), 0);
+  const income = incomeEntries.reduce((sum, e) => sum + e.amount, 0) + receivedTotal;
   // Lançamentos manuais de despesa continuam contabilizados, exceto a categoria
   // "PEÇA" — esse valor agora vem fresco de problemPartUsage acima, evitando contar
   // a mesma peça duas vezes para as poucas notas antigas que já tinham esse lançamento.
   const manualExpenses = entries
-    .filter((e) => e.type === "EXPENSE" && e.category !== "PEÇA")
+    .filter((e) => e.type === "EXPENSE" && e.category !== PART_COST_CATEGORY)
     .reduce((sum, e) => sum + e.amount, 0);
   const partsCost = partUsages.reduce((sum, u) => sum + u.unitCostSnapshot * u.quantity, 0);
   const paidPayablesTotal = paidPayables.reduce((sum, p) => sum + (p.paidAmount ?? p.amount), 0);
   const expenses = manualExpenses + partsCost + paidPayablesTotal;
 
-  // Série dos últimos 6 meses, pra alimentar os gráficos do resumo.
+  // Série mensal pra alimentar os gráficos do resumo — últimos 6 meses quando não há
+  // filtro de período; dentro do período filtrado, quando houver um.
   const now = new Date();
+  const rangeStart = from ? new Date(from) : new Date(now.getFullYear(), now.getMonth() - 5, 1);
+  const rangeEnd = to ? new Date(to) : now;
   const monthly = new Map<string, { month: string; income: number; partsCost: number; paidPayables: number; manualExpenses: number }>();
-  for (let i = 5; i >= 0; i--) {
-    const key = monthKey(new Date(now.getFullYear(), now.getMonth() - i, 1));
+  const cursor = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
+  while (cursor <= rangeEnd) {
+    const key = monthKey(cursor);
     monthly.set(key, { month: key, income: 0, partsCost: 0, paidPayables: 0, manualExpenses: 0 });
+    cursor.setMonth(cursor.getMonth() + 1);
   }
   for (const e of entries) {
     const bucket = monthly.get(monthKey(new Date(e.occurredAt)));
     if (!bucket) continue;
-    if (e.type === "INCOME") bucket.income += e.amount;
-    else if (e.category !== "PEÇA") bucket.manualExpenses += e.amount;
+    if (e.type === "INCOME" && e.category !== PDV_PROFIT_CATEGORY) bucket.income += e.amount;
+    else if (e.type === "EXPENSE" && e.category !== PART_COST_CATEGORY) bucket.manualExpenses += e.amount;
+  }
+  for (const r of receivedReceivables) {
+    const bucket = monthly.get(monthKey(new Date(r.receivedAt ?? r.updatedAt)));
+    if (bucket) bucket.income += r.receivedAmount ?? r.amount;
   }
   for (const u of partUsages) {
     const bucket = monthly.get(monthKey(new Date(u.createdAt)));
@@ -83,12 +119,23 @@ financeRouter.get("/summary", requireAuth, requireRole("ADMIN"), async (_req, re
       partsCost,
       paidPayables: paidPayablesTotal,
       manualExpenses,
+      receivedReceivables: receivedTotal,
       profit: income - expenses,
       count: entries.length,
     },
     entries,
     monthly: monthlySeries,
   });
+});
+
+financeRouter.get("/expense-categories", requireAuth, requireRole("MECHANIC", "ADMIN"), async (_req, res) => {
+  const rows = await prisma.financialEntry.findMany({
+    where: { type: "EXPENSE" },
+    distinct: ["category"],
+    select: { category: true },
+    orderBy: { category: "asc" },
+  });
+  res.json({ categories: rows.map((r) => r.category) });
 });
 
 const expenseSchema = z.object({
@@ -98,7 +145,9 @@ const expenseSchema = z.object({
   occurredAt: z.string().datetime().optional(),
 });
 
-financeRouter.post("/expenses", requireAuth, requireRole("ADMIN"), async (req, res) => {
+// Qualquer funcionário (não só admin) pode lançar um gasto próprio — aba Gastos.
+// createdById vem sempre de req.user, nunca do corpo da requisição.
+financeRouter.post("/expenses", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
   const parsed = expenseSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
@@ -109,7 +158,9 @@ financeRouter.post("/expenses", requireAuth, requireRole("ADMIN"), async (req, r
       description: parsed.data.description,
       amount: parsed.data.amount,
       occurredAt: parsed.data.occurredAt ? new Date(parsed.data.occurredAt) : undefined,
+      createdById: req.user!.id,
     },
+    include: { createdBy: { select: { id: true, name: true } } },
   });
 
   res.status(201).json({ entry });

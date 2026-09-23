@@ -4,7 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { signToken } from "@/lib/jwt";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
-import { getEffectivePermissions } from "@/services/permissions.service";
+import { getEffectivePermissions, getAllowedTabs } from "@/services/permissions.service";
 import { upload, persistUploadedFile } from "@/middleware/upload";
 
 export const authRouter = Router();
@@ -126,7 +126,8 @@ authRouter.get("/me", requireAuth, async (req: AuthedRequest, res) => {
 
 authRouter.get("/me/permissions", requireAuth, async (req: AuthedRequest, res) => {
   const effective = await getEffectivePermissions(req.user!.id);
-  res.json({ permissions: Array.from(effective) });
+  const allowedTabs = await getAllowedTabs(req.user!.id);
+  res.json({ permissions: Array.from(effective), allowedTabs });
 });
 
 authRouter.patch("/me/avatar", requireAuth, upload.single("avatar"), async (req: AuthedRequest, res) => {

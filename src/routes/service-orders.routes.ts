@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
-import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS } from "@/lib/constants";
+import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS, SERVICE_ORDER_PRIORITIES, RETIRED_SERVICE_ORDER_STATUSES } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
 import { upload, persistUploadedFile } from "@/middleware/upload";
 import { recordAudit } from "@/services/audit.service";
@@ -81,6 +81,7 @@ const createOrderSchema = z.object({
   estimatedMax: z.number().optional(),
   scheduledAt: z.string().datetime().optional(),
   storeId: z.string().optional(),
+  priority: z.enum(SERVICE_ORDER_PRIORITIES).optional(),
 });
 
 serviceOrdersRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
@@ -96,6 +97,7 @@ serviceOrdersRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), asy
       estimatedMax: parsed.data.estimatedMax,
       scheduledAt: parsed.data.scheduledAt ? new Date(parsed.data.scheduledAt) : undefined,
       storeId: parsed.data.storeId,
+      priority: parsed.data.priority,
       status: "RECEIVED",
       progress: STATUS_PROGRESS.RECEIVED,
       timelineEvents: {
@@ -106,6 +108,37 @@ serviceOrdersRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), asy
   });
   res.status(201).json({ order });
 });
+
+// Checklist de fotos de avaria pré-existente — enviado no form de novo projeto, antes
+// de iniciar o reparo. Ficam salvas mesmo depois de o projeto ser finalizado/arquivado
+// (Media nunca é limpa nesses fluxos), visíveis via botão dedicado em OrderDetail.
+serviceOrdersRouter.post(
+  "/:id/damage-photos",
+  requireAuth,
+  requireRole("MECHANIC", "ADMIN"),
+  upload.array("photos", 7),
+  async (req: AuthedRequest<{ id: string }>, res) => {
+    const order = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
+    if (!order) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (files.length === 0) return res.status(400).json({ error: "Envie ao menos uma foto." });
+
+    const uploaded = await Promise.all(files.map((file) => persistUploadedFile(file)));
+    await prisma.media.createMany({
+      data: uploaded.map((url) => ({
+        serviceOrderId: order.id,
+        url,
+        type: "PHOTO" as const,
+        label: "Foto de avaria pré-existente",
+        isDamagePhoto: true,
+      })),
+    });
+
+    const media = await prisma.media.findMany({ where: { serviceOrderId: order.id, isDamagePhoto: true }, orderBy: { createdAt: "asc" } });
+    res.status(201).json({ media });
+  }
+);
 
 serviceOrdersRouter.get("/:id", requireAuth, async (req: AuthedRequest<{ id: string }>, res) => {
   const allowed = await canAccessServiceOrder(req.user!.id, req.user!.role, req.params.id);
@@ -205,6 +238,9 @@ serviceOrdersRouter.patch(
     const { status, progress } = parsed.data;
     if (status === "READY_FOR_PICKUP") {
       return res.status(400).json({ error: "Use /api/service-orders/:id/finalize para finalizar e entregar o veículo." });
+    }
+    if (RETIRED_SERVICE_ORDER_STATUSES.has(status)) {
+      return res.status(400).json({ error: "Esta etapa não é mais usada no fluxo." });
     }
 
     const before = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });

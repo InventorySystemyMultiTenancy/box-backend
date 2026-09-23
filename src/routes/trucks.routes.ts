@@ -170,6 +170,7 @@ const startTripSchema = z.object({
   startKm: z.coerce.number().int().min(0),
   startFuelLevel: z.string().min(1),
   startCondition: z.string().optional(),
+  appointmentId: z.string().optional(),
 });
 
 // Foto do painel é obrigatória — é a mesma foto que a IA lê (rota /recognize-panel)

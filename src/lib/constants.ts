@@ -18,6 +18,29 @@ export const SERVICE_ORDER_STATUSES = [
 
 export type ServiceOrderStatus = (typeof SERVICE_ORDER_STATUSES)[number];
 
+// Sequência realmente usada hoje (Kanban e "Avançar etapa") — AWAITING_APPROVAL,
+// PARTS_REQUESTED, PARTS_RECEIVED e WASHING saíram do fluxo ativo a pedido do
+// cliente (ver migration 20260923201008_client_requests_batch_1, que já reclassificou
+// qualquer projeto legado que estivesse nesses status). SERVICE_ORDER_STATUSES continua
+// existindo por completo — não remova chaves de STATUS_PROGRESS/STATUS_LABELS.
+export const ACTIVE_SERVICE_ORDER_STATUSES = [
+  "SCHEDULED",
+  "RECEIVED",
+  "AWAITING_DIAGNOSIS",
+  "DIAGNOSIS_DONE",
+  "IN_PROGRESS",
+  "TESTING",
+  "FINISHED",
+  "READY_FOR_PICKUP",
+] as const;
+
+export const RETIRED_SERVICE_ORDER_STATUSES = new Set<ServiceOrderStatus>([
+  "AWAITING_APPROVAL",
+  "PARTS_REQUESTED",
+  "PARTS_RECEIVED",
+  "WASHING",
+]);
+
 // Progresso sugerido (%) por status, usado como fallback quando nenhum
 // valor manual é informado ao mudar de estado.
 export const STATUS_PROGRESS: Record<ServiceOrderStatus, number> = {
@@ -125,6 +148,9 @@ export const APPOINTMENT_STATUSES = [
   "NO_SHOW",
 ] as const;
 export type AppointmentStatus = (typeof APPOINTMENT_STATUSES)[number];
+
+export const APPOINTMENT_TYPES = ["SERVICE", "PICKUP", "DROPOFF"] as const;
+export type AppointmentType = (typeof APPOINTMENT_TYPES)[number];
 
 // --- Gaps SIGMA (fases 1-8) ---------------------------------------------
 

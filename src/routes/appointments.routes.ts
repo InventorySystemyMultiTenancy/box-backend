@@ -10,9 +10,10 @@ import {
   setAppointmentStatus,
   getMechanicWorkload,
   getBayOccupancy,
+  getMyPickupsToday,
   AppointmentError,
 } from "@/services/appointments.service";
-import { APPOINTMENT_STATUSES } from "@/lib/constants";
+import { APPOINTMENT_STATUSES, APPOINTMENT_TYPES } from "@/lib/constants";
 
 export const appointmentsRouter = Router();
 
@@ -23,6 +24,8 @@ const appointmentSchema = z.object({
   serviceOrderId: z.string().optional(),
   mechanicId: z.string().optional(),
   bayId: z.string().optional(),
+  type: z.enum(APPOINTMENT_TYPES).optional(),
+  driverId: z.string().optional(),
   startAt: z.string().datetime(),
   estimatedDurationMin: z.number().int().min(5).max(24 * 60).optional(),
   notes: z.string().optional(),
@@ -32,6 +35,14 @@ const statusSchema = z.object({ status: z.enum(APPOINTMENT_STATUSES) });
 
 appointmentsRouter.get("/", requireAuth, requirePermission("agenda", "view"), async (req, res) => {
   const appointments = await listAppointments(req.query as Record<string, unknown>);
+  res.json({ appointments });
+});
+
+// Agendamentos de retirada/entrega do próprio usuário, hoje — usado pelo banner na
+// aba Caminhões. De propósito sem requirePermission("agenda"): um motorista cujo
+// cargo só mostra a aba Caminhões (ver Role.allowedTabs) ainda precisa ver isso.
+appointmentsRouter.get("/my-pickups-today", requireAuth, async (req: AuthedRequest, res) => {
+  const appointments = await getMyPickupsToday(req.user!.id);
   res.json({ appointments });
 });
 

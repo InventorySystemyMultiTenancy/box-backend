@@ -42,3 +42,10 @@ export async function hasPermission(userId: string, resource: string, action: st
 export async function listPermissionCatalog() {
   return prisma.permission.findMany({ orderBy: [{ resource: "asc" }, { action: "asc" }] });
 }
+
+// Abas visíveis pro cargo do usuário (Role.allowedTabs) — vazio significa "sem
+// restrição extra", o frontend cai no comportamento de sempre (role + hasPermission).
+export async function getAllowedTabs(userId: string): Promise<string[]> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { roleRef: { select: { allowedTabs: true } } } });
+  return user?.roleRef?.allowedTabs ?? [];
+}

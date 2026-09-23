@@ -19,7 +19,7 @@ export async function createRole(data: { name: string; slug: string; description
   return prisma.role.create({ data });
 }
 
-export async function updateRole(id: string, data: { name?: string; description?: string }) {
+export async function updateRole(id: string, data: { name?: string; description?: string; allowedTabs?: string[] }) {
   return prisma.role.update({ where: { id }, data });
 }
 

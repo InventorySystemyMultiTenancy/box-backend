@@ -33,13 +33,15 @@ model User {
   userPermissions UserPermission[]
 
   vehicles                Vehicle[]
-  timelineEvents          TimelineEvent[] @relation("EventAuthor")
-  vehicleParts            VehiclePart[]   @relation("PartResponsible")
-  quoteRequestsAsCustomer QuoteRequest[]  @relation("QuoteRequestCustomer")
-  quoteRequestsAsMechanic QuoteRequest[]  @relation("QuoteRequestMechanic")
+  timelineEvents          TimelineEvent[]  @relation("EventAuthor")
+  vehicleParts            VehiclePart[]    @relation("PartResponsible")
+  quoteRequestsAsCustomer QuoteRequest[]   @relation("QuoteRequestCustomer")
+  quoteRequestsAsMechanic QuoteRequest[]   @relation("QuoteRequestMechanic")
   client                  Client?
-  appointmentsAsMechanic  Appointment[]   @relation("AppointmentMechanic")
-  commissions             Commission[]    @relation("MechanicCommissions")
+  appointmentsAsMechanic  Appointment[]    @relation("AppointmentMechanic")
+  appointmentsAsDriver    Appointment[]    @relation("AppointmentDriver")
+  commissions             Commission[]     @relation("MechanicCommissions")
+  financialEntriesLogged  FinancialEntry[] @relation("FinancialEntryCreatedBy")
 
   serviceOrdersAsConsultant   ServiceOrder[]    @relation("ServiceOrderConsultant")
   serviceOrdersAsEstimator    ServiceOrder[]    @relation("ServiceOrderEstimator")
@@ -339,12 +341,19 @@ model Appointment {
   mechanic             User?         @relation("AppointmentMechanic", fields: [mechanicId], references: [id])
   bayId                String?
   bay                  Bay?          @relation(fields: [bayId], references: [id])
+  // SERVICE = compromisso na oficina (box/mecânico); PICKUP/DROPOFF = retirada/entrega
+  // de veículo por um motorista, sem box nem mecânico — usa driverId abaixo.
+  type                 String        @default("SERVICE") // SERVICE | PICKUP | DROPOFF
+  driverId             String?
+  driver               User?         @relation("AppointmentDriver", fields: [driverId], references: [id])
   startAt              DateTime
   estimatedDurationMin Int           @default(60)
   status               String        @default("SCHEDULED") // SCHEDULED | CONFIRMED | IN_PROGRESS | DONE | CANCELLED | NO_SHOW
   notes                String?
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
+
+  truckTrip TruckTrip?
 }
 
 // Cargo administrável (Mecânico, Financeiro, Gerente...) — não hardcoded.
@@ -354,6 +363,9 @@ model Role {
   slug        String   @unique
   description String?
   isSystem    Boolean  @default(false) // protege roles seed (Administrador/Mecânico) contra exclusão
+  // Lista de chaves de aba (ver TAB_KEYS no frontend) que usuários deste cargo podem
+  // ver na navegação — vazio = sem restrição extra (cai no role/hasPermission de sempre).
+  allowedTabs String[] @default([])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -676,6 +688,10 @@ model FinancialEntry {
   // balcão — permite reverter o lançamento se a venda for cancelada.
   counterSaleId   String?
   counterSale     CounterSale?      @relation(fields: [counterSaleId], references: [id])
+  // Quem lançou o gasto (aba Gastos) — nulo para lançamentos automáticos do sistema
+  // (PROJETO, ENTREGA_EXTRA, LUCRO_PDV, PEÇA), que não têm um autor humano.
+  createdById     String?
+  createdBy       User?             @relation("FinancialEntryCreatedBy", fields: [createdById], references: [id])
   occurredAt      DateTime          @default(now())
   createdAt       DateTime          @default(now())
 }
@@ -700,6 +716,9 @@ model Media {
   type              String // PHOTO | VIDEO | AUDIO | DOCUMENT
   label             String?
   isDeliveryPhoto   Boolean          @default(false)
+  // Foto de avaria pré-existente, enviada no checklist ao criar o projeto — continua
+  // salva mesmo depois de o projeto ser finalizado/arquivado.
+  isDamagePhoto     Boolean          @default(false)
   createdAt         DateTime         @default(now())
 }
 
@@ -983,6 +1002,11 @@ model TruckTrip {
   notes          String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+
+  // Preenchido quando essa pilotagem cumpre uma retirada/entrega agendada — ao
+  // finalizar a pilotagem, o agendamento correspondente também é marcado DONE.
+  appointmentId String?      @unique
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
 
   refuelings TruckRefueling[]
 }

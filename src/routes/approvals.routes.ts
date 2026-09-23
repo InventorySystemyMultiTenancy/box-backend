@@ -42,10 +42,10 @@ approvalsRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (
     include: { media: true },
   });
 
-  await prisma.serviceOrder.update({ where: { id: orderId }, data: { status: "AWAITING_APPROVAL" } });
+  await prisma.serviceOrder.update({ where: { id: orderId }, data: { status: "IN_PROGRESS" } });
 
   emitToOrder(orderId, "approval:new", { approval });
-  emitToOrder(orderId, "status:update", { orderId, status: "AWAITING_APPROVAL" });
+  emitToOrder(orderId, "status:update", { orderId, status: "IN_PROGRESS" });
   res.status(201).json({ approval });
 });
 

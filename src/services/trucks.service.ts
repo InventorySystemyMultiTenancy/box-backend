@@ -75,6 +75,9 @@ export interface StartTripInput {
   startFuelLevel: string;
   startCondition?: string;
   startPhotoUrl?: string;
+  // Vincula a pilotagem a uma retirada/entrega que o motorista tinha agendada pra
+  // hoje — ao finalizar a pilotagem, esse agendamento é marcado DONE automaticamente.
+  appointmentId?: string;
 }
 
 export async function startTrip(truckId: string, userId: string, role: string, input: StartTripInput) {
@@ -99,9 +102,16 @@ export async function startTrip(truckId: string, userId: string, role: string, i
     );
   }
 
+  if (input.appointmentId) {
+    const appointment = await prisma.appointment.findUnique({ where: { id: input.appointmentId } });
+    if (!appointment || appointment.driverId !== userId) {
+      throw new TruckError("Este agendamento não pertence a você.", 403);
+    }
+  }
+
   return prisma.truckTrip.create({
     data: { truckId, driverId: userId, ...input },
-    include: { truck: true, driver: { select: { id: true, name: true } } },
+    include: { truck: true, driver: { select: { id: true, name: true } }, appointment: true },
   });
 }
 
@@ -120,11 +130,19 @@ export async function finishTrip(truckId: string, tripId: string, userId: string
   if (!canOperate(trip.truck, userId, role)) throw new TruckError("Você não está designado para este caminhão.", 403);
   if (input.endKm < trip.startKm) throw new TruckError("A km de devolução não pode ser menor que a km de início.", 400);
 
-  return prisma.truckTrip.update({
+  const updated = await prisma.truckTrip.update({
     where: { id: tripId },
     data: { status: "COMPLETED", endedAt: new Date(), ...input },
-    include: { truck: true, driver: { select: { id: true, name: true } } },
+    include: { truck: true, driver: { select: { id: true, name: true } }, appointment: true },
   });
+
+  // Cumpriu a retirada/entrega vinculada — fecha o agendamento junto, mesmo padrão
+  // já usado em setAppointmentStatus (appointments.service.ts).
+  if (updated.appointmentId) {
+    await prisma.appointment.update({ where: { id: updated.appointmentId }, data: { status: "DONE" } });
+  }
+
+  return updated;
 }
 
 export async function listTrips(truckId: string) {

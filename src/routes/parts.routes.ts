@@ -181,7 +181,7 @@ partsRouter.patch(
       if (wasPending) {
         await tx.serviceOrder.update({
           where: { id: req.params.orderId },
-          data: { status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL },
+          data: { status: "IN_PROGRESS", progress: STATUS_PROGRESS.IN_PROGRESS },
         });
       }
 
@@ -194,8 +194,8 @@ partsRouter.patch(
     if (wasPending) {
       emitToOrder(req.params.orderId, "status:update", {
         orderId: req.params.orderId,
-        status: "AWAITING_APPROVAL",
-        progress: STATUS_PROGRESS.AWAITING_APPROVAL,
+        status: "IN_PROGRESS",
+        progress: STATUS_PROGRESS.IN_PROGRESS,
       });
     }
     res.json(result);
@@ -297,7 +297,7 @@ partsRouter.post(
       await tx.serviceOrder.update({
         where: { id: orderId },
         data: isAdmin
-          ? { status: "AWAITING_APPROVAL", progress: STATUS_PROGRESS.AWAITING_APPROVAL }
+          ? { status: "IN_PROGRESS", progress: STATUS_PROGRESS.IN_PROGRESS }
           : { status: "DIAGNOSIS_DONE", progress: STATUS_PROGRESS.DIAGNOSIS_DONE },
       });
 
@@ -321,8 +321,8 @@ partsRouter.post(
     emitToOrder(orderId, "timeline:new", { event: result.event });
     emitToOrder(orderId, "status:update", {
       orderId,
-      status: isAdmin ? "AWAITING_APPROVAL" : "DIAGNOSIS_DONE",
-      progress: isAdmin ? STATUS_PROGRESS.AWAITING_APPROVAL : STATUS_PROGRESS.DIAGNOSIS_DONE,
+      status: isAdmin ? "IN_PROGRESS" : "DIAGNOSIS_DONE",
+      progress: isAdmin ? STATUS_PROGRESS.IN_PROGRESS : STATUS_PROGRESS.DIAGNOSIS_DONE,
     });
 
     res.status(201).json(result);
