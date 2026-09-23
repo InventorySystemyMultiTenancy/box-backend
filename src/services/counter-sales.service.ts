@@ -82,7 +82,7 @@ export async function createCounterSale(input: CounterSaleInput) {
       },
     });
 
-    return tx.counterSale.create({
+    const sale = await tx.counterSale.create({
       data: {
         code,
         clientId: input.clientId,
@@ -96,6 +96,30 @@ export async function createCounterSale(input: CounterSaleInput) {
       },
       include,
     });
+
+    // Se o preço de venda ficou acima do custo da peça pra oficina, a diferença é
+    // lucro — entra como entrada no financeiro (Resumo já soma todo FinancialEntry
+    // INCOME; o fluxo de caixa ignora essa categoria pra não contar a mesma venda
+    // duas vezes, já que a receita cheia já está na conta a receber "PDV" acima).
+    for (const item of input.items) {
+      const part = parts.find((p) => p.id === item.inventoryPartId)!;
+      const profit = (item.unitPrice - part.unitCost) * item.quantity;
+      if (profit > 0) {
+        await tx.financialEntry.create({
+          data: {
+            type: "INCOME",
+            category: "LUCRO_PDV",
+            description: `Margem na venda de balcão ${code} — ${part.name}`,
+            amount: profit,
+            inventoryPartId: part.id,
+            counterSaleId: sale.id,
+            occurredAt: now,
+          },
+        });
+      }
+    }
+
+    return sale;
   });
 }
 
@@ -111,6 +135,9 @@ export async function cancelCounterSale(id: string) {
     if (sale.accountReceivableId) {
       await tx.accountReceivable.update({ where: { id: sale.accountReceivableId }, data: { status: "CANCELLED" } });
     }
+    // Desfaz a margem de lucro lançada na criação da venda — senão o cancelamento
+    // deixaria uma entrada fantasma no financeiro.
+    await tx.financialEntry.deleteMany({ where: { counterSaleId: sale.id } });
     return tx.counterSale.update({ where: { id }, data: { status: "CANCELLED", cancelledAt: new Date() }, include });
   });
 }

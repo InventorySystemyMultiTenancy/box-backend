@@ -6,6 +6,7 @@ import {
   createAccountsPayable,
   listAccountsPayable,
   payAccountPayable,
+  updateAccountPayable,
   cancelAccountPayable,
   PayableError,
 } from "@/services/accounts-payable.service";
@@ -31,6 +32,19 @@ const paySchema = z.object({
   paymentMethod: z.string().optional(),
 });
 
+const updateSchema = z.object({
+  description: z.string().min(1).optional(),
+  category: z.string().min(1).optional(),
+  payeeName: z.string().min(1).optional(),
+  amount: z.number().positive().optional(),
+  dueDate: z.string().optional(),
+  paymentMethod: z.string().optional(),
+  bankAccountId: z.string().optional(),
+  notes: z.string().optional(),
+  paidAt: z.string().optional(),
+  paidAmount: z.number().positive().optional(),
+});
+
 accountsPayableRouter.get("/", requireAuth, requirePermission("finance", "view"), async (req, res) => {
   const result = await listAccountsPayable(req.query as Record<string, unknown>);
   res.json(result);
@@ -50,6 +64,19 @@ accountsPayableRouter.post("/:id/pay", requireAuth, requirePermission("finance",
 
   try {
     const payable = await payAccountPayable(req.params.id, parsed.data);
+    res.json({ payable });
+  } catch (err) {
+    if (err instanceof PayableError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
+});
+
+accountsPayableRouter.patch("/:id", requireAuth, requirePermission("finance", "manage"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = updateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+  try {
+    const payable = await updateAccountPayable(req.params.id, parsed.data);
     res.json({ payable });
   } catch (err) {
     if (err instanceof PayableError) return res.status(err.status).json({ error: err.message });

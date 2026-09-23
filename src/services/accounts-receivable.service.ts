@@ -28,6 +28,19 @@ export interface ReceiveInput {
   paymentMethod?: string;
 }
 
+export interface UpdateReceivableInput {
+  description?: string;
+  category?: string;
+  clientId?: string;
+  amount?: number;
+  dueDate?: string;
+  paymentMethod?: string;
+  bankAccountId?: string;
+  notes?: string;
+  receivedAt?: string;
+  receivedAmount?: number;
+}
+
 export async function createAccountsReceivable(input: AccountReceivableInput) {
   const installments = Math.max(1, Math.floor(input.installments ?? 1));
   const groupId = installments > 1 ? randomUUID() : undefined;
@@ -106,6 +119,28 @@ export async function receiveAccountReceivable(id: string, input: ReceiveInput) 
       receivedAmount: input.receivedAmount ?? receivable.amount,
       bankAccountId: input.bankAccountId ?? receivable.bankAccountId,
       paymentMethod: input.paymentMethod ?? receivable.paymentMethod,
+    },
+  });
+}
+
+// Edição livre de qualquer campo pelo usuário, inclusive de uma conta já recebida.
+export async function updateAccountReceivable(id: string, input: UpdateReceivableInput) {
+  const existing = await prisma.accountReceivable.findUnique({ where: { id } });
+  if (!existing) throw new ReceivableError("Conta a receber não encontrada.", 404);
+
+  return prisma.accountReceivable.update({
+    where: { id },
+    data: {
+      description: input.description,
+      category: input.category,
+      clientId: input.clientId,
+      amount: input.amount,
+      dueDate: input.dueDate ? new Date(input.dueDate) : undefined,
+      paymentMethod: input.paymentMethod,
+      bankAccountId: input.bankAccountId,
+      notes: input.notes,
+      receivedAt: input.receivedAt ? new Date(input.receivedAt) : undefined,
+      receivedAmount: input.receivedAmount,
     },
   });
 }

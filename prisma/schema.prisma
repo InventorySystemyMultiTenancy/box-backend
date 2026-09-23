@@ -55,16 +55,19 @@ model User {
   truckRefuelings             TruckRefueling[]  @relation("TruckRefuelingDriver")
 }
 
-// Comissão de mecânico sobre um reparo aprovado — uma por Approval (evita duplicar
-// se o job de geração rodar de novo sobre o mesmo período). Vira AccountPayable ao ser paga.
+// Comissão de mecânico sobre um projeto — normalmente uma por Approval (o gerador
+// automático evita duplicar rodando de novo sobre o mesmo período), mas a criação
+// manual também permite basear no valor final do projeto inteiro (basisType
+// ORDER_TOTAL), caso em que approvalId fica vazio. Vira AccountPayable ao ser paga.
 model Commission {
   id               String          @id @default(cuid())
   mechanicId       String
   mechanic         User            @relation("MechanicCommissions", fields: [mechanicId], references: [id])
-  approvalId       String          @unique
-  approval         Approval        @relation(fields: [approvalId], references: [id])
+  approvalId       String?         @unique
+  approval         Approval?       @relation(fields: [approvalId], references: [id])
   serviceOrderId   String
   serviceOrder     ServiceOrder    @relation(fields: [serviceOrderId], references: [id])
+  basisType        String          @default("APPROVAL") // APPROVAL_ESTIMATE (padrão do gerador automático, base = Approval.estimatedValue) | APPROVAL_LABOR (base = Approval.laborValue, escolha manual) | ORDER_TOTAL (base = soma dos aprovados do projeto)
   baseAmount       Float
   rate             Float
   amount           Float
@@ -240,7 +243,8 @@ model CounterSale {
   createdAt           DateTime           @default(now())
   cancelledAt         DateTime?
 
-  items CounterSaleItem[]
+  items            CounterSaleItem[]
+  financialEntries FinancialEntry[]
 }
 
 model CounterSaleItem {
@@ -668,6 +672,10 @@ model FinancialEntry {
   inventoryPart   InventoryPart?    @relation(fields: [inventoryPartId], references: [id])
   partUsageId     String?
   partUsage       ProblemPartUsage? @relation(fields: [partUsageId], references: [id])
+  // Preenchido na margem de lucro (categoria "LUCRO_PDV") gerada por uma venda de
+  // balcão — permite reverter o lançamento se a venda for cancelada.
+  counterSaleId   String?
+  counterSale     CounterSale?      @relation(fields: [counterSaleId], references: [id])
   occurredAt      DateTime          @default(now())
   createdAt       DateTime          @default(now())
 }

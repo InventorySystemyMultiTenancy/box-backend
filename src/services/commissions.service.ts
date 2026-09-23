@@ -10,7 +10,7 @@ export class CommissionError extends Error {
 const include = {
   mechanic: { select: { id: true, name: true, commissionRate: true } },
   serviceOrder: { select: { id: true, code: true } },
-  approval: { select: { id: true, title: true, estimatedValue: true } },
+  approval: { select: { id: true, title: true, estimatedValue: true, laborValue: true } },
 } as const;
 
 // Gera comissões a partir de aprovações já respondidas (APPROVED) no período, atribuídas
@@ -41,6 +41,7 @@ export async function generateCommissions(from: string, to: string) {
         mechanicId: mechanic.id,
         approvalId: approval.id,
         serviceOrderId: approval.serviceOrderId,
+        basisType: "APPROVAL_ESTIMATE",
         baseAmount,
         rate,
         amount,
@@ -51,6 +52,67 @@ export async function generateCommissions(from: string, to: string) {
   }
 
   return created;
+}
+
+export interface ManualCommissionInput {
+  mechanicId: string;
+  serviceOrderId: string;
+  rate: number;
+  basisType: "APPROVAL_LABOR" | "ORDER_TOTAL";
+  // Obrigatório quando basisType é APPROVAL_LABOR — qual reparo do projeto usar
+  // como base (a mão de obra daquele reparo específico).
+  approvalId?: string;
+}
+
+// Criação manual — admin escolhe funcionário, projeto, % e a base do cálculo:
+// mão de obra de um reparo específico ou o valor final do projeto (soma dos
+// aprovados). Diferente do gerador automático, aqui o rate é livre, não vem de
+// User.commissionRate.
+export async function createManualCommission(input: ManualCommissionInput) {
+  if (input.rate <= 0) throw new CommissionError("Informe uma porcentagem válida.", 400);
+
+  const mechanic = await prisma.user.findUnique({ where: { id: input.mechanicId } });
+  if (!mechanic) throw new CommissionError("Funcionário não encontrado.", 404);
+
+  const order = await prisma.serviceOrder.findUnique({
+    where: { id: input.serviceOrderId },
+    include: { approvals: true },
+  });
+  if (!order) throw new CommissionError("Projeto não encontrado.", 404);
+
+  let baseAmount: number;
+  let approvalId: string | undefined;
+
+  if (input.basisType === "APPROVAL_LABOR") {
+    if (!input.approvalId) throw new CommissionError("Selecione o reparo que servirá de base.", 400);
+    const approval = order.approvals.find((a) => a.id === input.approvalId);
+    if (!approval) throw new CommissionError("Reparo não encontrado neste projeto.", 404);
+    if (!approval.laborValue) throw new CommissionError("Este reparo ainda não tem mão de obra definida.", 400);
+
+    const existing = await prisma.commission.findUnique({ where: { approvalId: approval.id } });
+    if (existing) throw new CommissionError("Já existe uma comissão lançada para este reparo.", 409);
+
+    baseAmount = approval.laborValue;
+    approvalId = approval.id;
+  } else {
+    baseAmount = order.approvals.filter((a) => a.status === "APPROVED").reduce((sum, a) => sum + (a.estimatedValue ?? 0), 0);
+    if (baseAmount <= 0) throw new CommissionError("Este projeto ainda não tem valor aprovado para basear a comissão.", 400);
+  }
+
+  const amount = baseAmount * input.rate;
+
+  return prisma.commission.create({
+    data: {
+      mechanicId: mechanic.id,
+      approvalId,
+      serviceOrderId: order.id,
+      basisType: input.basisType,
+      baseAmount,
+      rate: input.rate,
+      amount,
+    },
+    include,
+  });
 }
 
 export async function listCommissions(query: Record<string, unknown>) {

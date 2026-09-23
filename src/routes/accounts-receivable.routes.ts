@@ -6,6 +6,7 @@ import {
   createAccountsReceivable,
   listAccountsReceivable,
   receiveAccountReceivable,
+  updateAccountReceivable,
   cancelAccountReceivable,
   createReceivableFromServiceOrder,
   ReceivableError,
@@ -36,6 +37,19 @@ const receiveSchema = z.object({
 const fromOrderSchema = z.object({
   serviceOrderId: z.string(),
   dueDate: z.string(),
+});
+
+const updateSchema = z.object({
+  description: z.string().min(1).optional(),
+  category: z.string().min(1).optional(),
+  clientId: z.string().optional(),
+  amount: z.number().positive().optional(),
+  dueDate: z.string().optional(),
+  paymentMethod: z.string().optional(),
+  bankAccountId: z.string().optional(),
+  notes: z.string().optional(),
+  receivedAt: z.string().optional(),
+  receivedAmount: z.number().positive().optional(),
 });
 
 accountsReceivableRouter.get("/", requireAuth, requirePermission("finance", "view"), async (req, res) => {
@@ -70,6 +84,19 @@ accountsReceivableRouter.post("/:id/receive", requireAuth, requirePermission("fi
 
   try {
     const receivable = await receiveAccountReceivable(req.params.id, parsed.data);
+    res.json({ receivable });
+  } catch (err) {
+    if (err instanceof ReceivableError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
+});
+
+accountsReceivableRouter.patch("/:id", requireAuth, requirePermission("finance", "manage"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = updateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+  try {
+    const receivable = await updateAccountReceivable(req.params.id, parsed.data);
     res.json({ receivable });
   } catch (err) {
     if (err instanceof ReceivableError) return res.status(err.status).json({ error: err.message });

@@ -30,6 +30,19 @@ export interface PayInput {
   paymentMethod?: string;
 }
 
+export interface UpdatePayableInput {
+  description?: string;
+  category?: string;
+  payeeName?: string;
+  amount?: number;
+  dueDate?: string;
+  paymentMethod?: string;
+  bankAccountId?: string;
+  notes?: string;
+  paidAt?: string;
+  paidAmount?: number;
+}
+
 // Uma compra parcelada vira N registros com o mesmo groupId, vencendo em meses
 // consecutivos a partir da dueDate informada — cada parcela é baixada individualmente.
 export async function createAccountsPayable(input: AccountPayableInput) {
@@ -114,6 +127,29 @@ export async function payAccountPayable(id: string, input: PayInput) {
       paidAmount: input.paidAmount ?? payable.amount,
       bankAccountId: input.bankAccountId ?? payable.bankAccountId,
       paymentMethod: input.paymentMethod ?? payable.paymentMethod,
+    },
+  });
+}
+
+// Edição livre de qualquer campo pelo usuário — inclusive de uma conta já paga
+// (corrigir valor/data lançados errado), diferente de "pagar" (que só baixa o status).
+export async function updateAccountPayable(id: string, input: UpdatePayableInput) {
+  const existing = await prisma.accountPayable.findUnique({ where: { id } });
+  if (!existing) throw new PayableError("Conta a pagar não encontrada.", 404);
+
+  return prisma.accountPayable.update({
+    where: { id },
+    data: {
+      description: input.description,
+      category: input.category,
+      payeeName: input.payeeName,
+      amount: input.amount,
+      dueDate: input.dueDate ? new Date(input.dueDate) : undefined,
+      paymentMethod: input.paymentMethod,
+      bankAccountId: input.bankAccountId,
+      notes: input.notes,
+      paidAt: input.paidAt ? new Date(input.paidAt) : undefined,
+      paidAmount: input.paidAmount,
     },
   });
 }

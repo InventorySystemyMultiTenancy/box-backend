@@ -45,15 +45,48 @@ function isBoleto(paymentMethod?: string) {
 // oficina tiver certificado digital e contrato com um gateway (eNotas, Focus NFe...).
 const provider: NFeProvider = new MockNFeProvider();
 
+function str(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 export async function listInvoices(query: Record<string, unknown>) {
   const pageParams = parsePageParams(query);
-  const status = typeof query.status === "string" ? query.status : undefined;
-  const type = typeof query.type === "string" ? query.type : undefined;
+  const status = str(query.status);
+  const type = str(query.type);
+  const clientName = str(query.clientName);
+  const number = str(query.number);
+  const orderCode = str(query.orderCode);
+  const date = str(query.date);
 
-  const where = {
-    ...(status ? { status } : {}),
-    ...(type ? { type } : {}),
-  };
+  // Cada filtro entra como uma condição própria (em vez de espalhar chaves no mesmo
+  // objeto) pra não colidir quando mais de um filtro precisa do seu próprio OR
+  // (nome do cliente e data, por exemplo).
+  const conditions: Record<string, unknown>[] = [];
+  if (status) conditions.push({ status });
+  if (type) conditions.push({ type });
+  if (clientName) {
+    conditions.push({
+      OR: [
+        { client: { name: { contains: clientName, mode: "insensitive" } } },
+        { recipientName: { contains: clientName, mode: "insensitive" } },
+      ],
+    });
+  }
+  if (number) conditions.push({ number: { contains: number, mode: "insensitive" } });
+  if (orderCode) conditions.push({ serviceOrder: { code: { contains: orderCode, mode: "insensitive" } } });
+  if (date) {
+    const start = new Date(`${date}T00:00:00.000Z`);
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    // Nota emitida sem data (rascunho) ainda entra na busca pela data de cadastro.
+    conditions.push({
+      OR: [
+        { issueDate: { gte: start, lt: end } },
+        { issueDate: null, createdAt: { gte: start, lt: end } },
+      ],
+    });
+  }
+
+  const where = conditions.length > 0 ? { AND: conditions } : {};
 
   const [items, total] = await Promise.all([
     prisma.invoice.findMany({
