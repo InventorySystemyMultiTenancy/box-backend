@@ -166,6 +166,27 @@ financeRouter.post("/expenses", requireAuth, requireRole("MECHANIC", "ADMIN"), a
   res.status(201).json({ entry });
 });
 
+// Gastos que o próprio usuário lançou num período — usado pelo relatório em PDF na
+// aba Gastos. Cada funcionário só vê os seus; o Resumo (admin) já tem o filtro geral.
+financeRouter.get("/my-expenses", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
+  const from = typeof req.query.from === "string" ? req.query.from : undefined;
+  const to = typeof req.query.to === "string" ? req.query.to : undefined;
+  // "to" é só a data (sem hora) — soma um dia pra incluir o dia inteiro, não só a
+  // meia-noite dele.
+  const toExclusive = to ? new Date(new Date(to).getTime() + 24 * 60 * 60 * 1000) : undefined;
+
+  const entries = await prisma.financialEntry.findMany({
+    where: {
+      createdById: req.user!.id,
+      type: "EXPENSE",
+      ...(from || toExclusive ? { occurredAt: { ...(from ? { gte: new Date(from) } : {}), ...(toExclusive ? { lt: toExclusive } : {}) } } : {}),
+    },
+    orderBy: { occurredAt: "desc" },
+  });
+
+  res.json({ entries, total: entries.reduce((sum, e) => sum + e.amount, 0) });
+});
+
 const updateEntrySchema = z.object({
   type: z.enum(["INCOME", "EXPENSE"]).optional(),
   category: z.string().min(1).optional(),
