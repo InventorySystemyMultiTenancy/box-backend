@@ -59,9 +59,18 @@ authRouter.post("/users", requireAuth, requireRole("ADMIN"), async (req, res) =>
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) return res.status(409).json({ error: "Este e-mail já está cadastrado." });
 
+  // O cargo já define o perfil de acesso — evita uma combinação sem sentido (ex.: Perfil
+  // Cliente + Cargo "Motorista") caso o campo "role" enviado esteja fora de sincronia.
+  let effectiveRole = role;
+  if (roleId) {
+    const cargo = await prisma.role.findUnique({ where: { id: roleId } });
+    if (!cargo) return res.status(400).json({ error: "Cargo não encontrado." });
+    effectiveRole = cargo.baseRole as typeof role;
+  }
+
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { name, email, passwordHash, role, roleId, phone, commissionRate },
+    data: { name, email, passwordHash, role: effectiveRole, roleId, phone, commissionRate },
   });
 
   res.status(201).json({ user: toPublicUser(user) });
@@ -81,6 +90,16 @@ authRouter.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req: Au
   const parsed = updateUserSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
+  // Mesma regra da criação: se um cargo está sendo definido, o perfil vem dele, não do
+  // que foi enviado em "role" — só quando o cargo é removido (roleId: null) o perfil
+  // enviado manualmente é respeitado.
+  let effectiveRole = parsed.data.role;
+  if (parsed.data.roleId) {
+    const cargo = await prisma.role.findUnique({ where: { id: parsed.data.roleId } });
+    if (!cargo) return res.status(400).json({ error: "Cargo não encontrado." });
+    effectiveRole = cargo.baseRole as typeof effectiveRole;
+  }
+
   const passwordHash = parsed.data.password ? await bcrypt.hash(parsed.data.password, 10) : undefined;
   const user = await prisma.user.update({
     where: { id: req.params.id },
@@ -88,7 +107,7 @@ authRouter.patch("/users/:id", requireAuth, requireRole("ADMIN"), async (req: Au
       name: parsed.data.name,
       email: parsed.data.email,
       phone: parsed.data.phone,
-      role: parsed.data.role,
+      role: effectiveRole,
       roleId: parsed.data.roleId,
       commissionRate: parsed.data.commissionRate,
       ...(passwordHash ? { passwordHash } : {}),

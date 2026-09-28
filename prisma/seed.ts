@@ -80,10 +80,10 @@ async function main() {
     permissions.find((p) => p.resource === resource && p.action === action)!.id;
 
   const adminRole = await prisma.role.create({
-    data: { name: "Administrador", slug: "admin", isSystem: true },
+    data: { name: "Administrador", slug: "admin", isSystem: true, baseRole: "ADMIN" },
   });
   const mechanicRole = await prisma.role.create({
-    data: { name: "Mecânico", slug: "mecanico", isSystem: true },
+    data: { name: "Mecânico", slug: "mecanico", isSystem: true, baseRole: "MECHANIC" },
   });
 
   await prisma.rolePermission.createMany({

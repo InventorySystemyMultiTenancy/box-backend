@@ -32,11 +32,13 @@ function slugify(name: string) {
 const createRoleSchema = z.object({
   name: z.string().min(2),
   description: z.string().optional(),
+  baseRole: z.enum(["MECHANIC", "ADMIN"]),
 });
 
 const updateRoleSchema = z.object({
   name: z.string().min(2).optional(),
   description: z.string().optional(),
+  baseRole: z.enum(["MECHANIC", "ADMIN"]).optional(),
   allowedTabs: z.array(z.string()).optional(),
 });
 
@@ -54,7 +56,12 @@ rolesRouter.post("/", requireAuth, requirePermission("roles", "manage"), async (
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
   try {
-    const role = await createRole({ name: parsed.data.name, slug: slugify(parsed.data.name), description: parsed.data.description });
+    const role = await createRole({
+      name: parsed.data.name,
+      slug: slugify(parsed.data.name),
+      description: parsed.data.description,
+      baseRole: parsed.data.baseRole,
+    });
     res.status(201).json({ role });
   } catch (err) {
     if (err instanceof RoleError) return res.status(err.status).json({ error: err.message });

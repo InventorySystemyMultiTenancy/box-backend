@@ -363,6 +363,11 @@ model Role {
   slug        String   @unique
   description String?
   isSystem    Boolean  @default(false) // protege roles seed (Administrador/Mecânico) contra exclusão
+  // Perfil de acesso (User.role) que este cargo pressupõe — CUSTOMER não usa cargo.
+  // Ao criar/editar um usuário escolhendo este cargo, o Perfil vem daqui em vez de a
+  // pessoa escolher Perfil e Cargo por conta própria e poder juntar uma combinação sem
+  // sentido (ex.: Perfil Cliente + Cargo "Motorista").
+  baseRole    String   @default("MECHANIC") // MECHANIC | ADMIN
   // Lista de chaves de aba (ver TAB_KEYS no frontend) que usuários deste cargo podem
   // ver na navegação — vazio = sem restrição extra (cai no role/hasPermission de sempre).
   allowedTabs String[] @default([])

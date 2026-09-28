@@ -13,13 +13,16 @@ export async function listRoles() {
   });
 }
 
-export async function createRole(data: { name: string; slug: string; description?: string }) {
+export async function createRole(data: { name: string; slug: string; description?: string; baseRole: "MECHANIC" | "ADMIN" }) {
   const existing = await prisma.role.findUnique({ where: { slug: data.slug } });
   if (existing) throw new RoleError("Já existe um cargo com este identificador.", 409);
   return prisma.role.create({ data });
 }
 
-export async function updateRole(id: string, data: { name?: string; description?: string; allowedTabs?: string[] }) {
+export async function updateRole(
+  id: string,
+  data: { name?: string; description?: string; baseRole?: "MECHANIC" | "ADMIN"; allowedTabs?: string[] }
+) {
   return prisma.role.update({ where: { id }, data });
 }
 
