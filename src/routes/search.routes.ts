@@ -97,9 +97,12 @@ searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req,
 searchRouter.post("/assist", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req, res) => {
   const q = typeof req.body?.q === "string" ? req.body.q.trim() : "";
   if (q.length < 2) return res.status(400).json({ error: "Termo de busca inválido." });
+  // Aba de onde a pessoa perguntou (ver submitHeaderSearch no front) — dá contexto pra
+  // perguntas tipo "o que é essa aba?" sem precisar que ela nomeie a aba.
+  const currentPath = typeof req.body?.currentPath === "string" ? req.body.currentPath.trim() : undefined;
 
   try {
-    const assistance = await getSearchAssistance(q);
+    const assistance = await getSearchAssistance(q, currentPath);
     res.json(assistance);
   } catch (err) {
     if (err instanceof SearchAssistantError) return res.status(err.status).json({ error: err.message });

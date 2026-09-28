@@ -30,7 +30,7 @@ const KNOWN_ROUTES: SearchAssistAction[] = [
   { path: "/dashboard/pecas", label: "Peças" },
   { path: "/dashboard/financeiro", label: "Financeiro" },
   { path: "/dashboard/clientes", label: "Clientes" },
-  { path: "/dashboard/complementos", label: "Complementos" },
+  { path: "/dashboard/gastos", label: "Gastos" },
   { path: "/dashboard/alertas", label: "Alertas" },
   { path: "/dashboard/caminhoes", label: "Caminhões" },
   { path: "/dashboard/seguradoras", label: "Seguradoras" },
@@ -50,7 +50,9 @@ const SYSTEM_PROMPT = `Você é o assistente da BOX., um sistema de gestão de o
 
 Isso pode significar duas coisas:
 (A) A pessoa estava procurando um registro (cliente, OS, placa, peça...) mas digitou errado ou ele não existe.
-(B) A pessoa não está procurando um registro — está PERGUNTANDO como fazer algo no sistema, ex: "como cadastrar um cliente", "como avançar etapa", "como emitir nota fiscal", "como gerar relatório", "como funciona o pdv". Nesse caso é uma pergunta de uso, não uma busca.
+(B) A pessoa não está procurando um registro — está PERGUNTANDO como fazer algo no sistema, ou o que é/serve alguma aba, ex: "como cadastrar um cliente", "como avançar etapa", "como emitir nota fiscal", "como gerar relatório", "como funciona o pdv", "o que é essa aba?". Nesse caso é uma pergunta de uso, não uma busca.
+
+Às vezes a pessoa cola a própria URL da página em que está (ex.: ".../dashboard/gastos") junto da pergunta — nesse caso o trecho depois de "/dashboard/" é o path de uma das rotas da lista abaixo; use isso pra saber exatamente de qual aba ela está falando, mesmo sem ela nomear a aba. Toda rota da lista abaixo é uma aba real e existente do sistema — nunca diga que uma delas "não existe".
 
 Se for o caso (B), gere um tutorial curto (3 a 5 passos, objetivos, na ordem em que a pessoa deve clicar/preencher) de como realizar aquilo, usando EXATAMENTE os nomes de botões/campos/abas descritos abaixo — nunca invente um botão ou campo que não está na lista. Aponte a aba certa em "actions". Se for o caso (A), não gere tutorial — só explique/sugira como no comportamento normal.
 
@@ -82,17 +84,24 @@ Rotas e o que dá pra fazer em cada uma (path — label — botões/ações reai
 - /dashboard/relatorios — Relatórios — indicadores gerenciais; use os campos de data "De" e "Até" no topo da página pra gerar o relatório do período desejado (atualiza automaticamente, não tem botão separado de "gerar")
 - /dashboard/lojas — Lojas — botão "Nova loja" cadastra unidade/filial
 - /dashboard/cargos — Cargos — botão "Novo cargo" cadastra cargo e define quais abas/permissões ele enxerga
-- /dashboard/complementos — Complementos — pendências/complementos de orçamento que ainda faltam confirmar com o cliente
+- /dashboard/gastos — Gastos — "Meus gastos": qualquer mecânico/admin lança aqui um gasto próprio (categoria, descrição, valor, data) e pode gerar um relatório impresso do período; o admin vê e filtra os gastos de toda a equipe em Financeiro (aba "Resumo", seção "Cadastrar gasto")
 - /dashboard/alertas — Alertas — notificações do sistema
 - /dashboard/perfil — Perfil — dados da própria conta (nome, foto, senha)
 
 Seja direto e útil, como alguém que conhece bem o sistema orientando um colega. Se a pergunta for vaga demais pra saber a qual aba se refere (ex.: "como cadastrar tal coisa" sem dizer o quê), pergunte de volta em "message" em vez de chutar um tutorial, e devolva "steps": null.`;
 
-export async function getSearchAssistance(query: string): Promise<SearchAssistResult> {
+export async function getSearchAssistance(query: string, currentPath?: string): Promise<SearchAssistResult> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new SearchAssistantError("Assistente de IA não configurado (defina OPENAI_API_KEY no ambiente).", 501);
   }
+
+  // Só repassa se bater com uma rota conhecida — currentPath vem do front, mas não custa
+  // validar antes de colocar no prompt (evita mandar lixo/injeção pra IA como contexto).
+  const currentRoute = currentPath ? KNOWN_ROUTES.find((r) => r.path === currentPath) : undefined;
+  const userContent = currentRoute
+    ? `A pessoa está atualmente na aba "${currentRoute.label}" (${currentRoute.path}). Texto que ela digitou na busca, sem resultados: "${query}"`
+    : `Texto digitado na busca, sem resultados: "${query}"`;
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -106,7 +115,7 @@ export async function getSearchAssistance(query: string): Promise<SearchAssistRe
       max_tokens: 500,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `Texto digitado na busca, sem resultados: "${query}"` },
+        { role: "user", content: userContent },
       ],
     }),
   });
