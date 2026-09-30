@@ -43,6 +43,17 @@ export async function revokeShareLink(serviceOrderId: string) {
   await prisma.serviceOrderShareLink.update({ where: { serviceOrderId }, data: { revokedAt: new Date() } });
 }
 
+// Só a validação + o id da ordem — usado pelo socket (join-order-public) pra colocar
+// quem está com o link na mesma sala (order:<id>) que já recebe os eventos em tempo
+// real de status/timeline/peça/aprovação, sem duplicar a lógica de validação do token.
+export async function resolveShareLinkOrderId(token: string): Promise<string> {
+  const link = await prisma.serviceOrderShareLink.findUnique({ where: { token } });
+  if (!link || !isActive(link)) {
+    throw new ShareLinkError("Este link não é mais válido — pode ter expirado ou sido revogado.", 404);
+  }
+  return link.serviceOrderId;
+}
+
 const publicOrderInclude = {
   vehicle: { include: { owner: { select: { name: true } } } },
   timelineEvents: { orderBy: { occurredAt: "asc" as const }, include: { media: true } },

@@ -2,6 +2,7 @@ import { Server as HttpServer } from "http";
 import { Server as SocketServer } from "socket.io";
 import { verifyToken } from "@/lib/jwt";
 import { canAccessServiceOrder } from "@/lib/authorization";
+import { resolveShareLinkOrderId } from "@/services/share-link.service";
 
 let io: SocketServer | undefined;
 
@@ -23,6 +24,18 @@ export function initSockets(httpServer: HttpServer) {
         socket.join(roomFor(orderId));
       } catch {
         socket.emit("error", { message: "Token inválido." });
+      }
+    });
+
+    // Link público de acompanhamento (sem login) — mesma sala order:<id> de sempre, só
+    // que a autorização aqui é o próprio token do link (validado e resolvido pro id da
+    // ordem), não um JWT de usuário.
+    socket.on("join-order-public", async ({ shareToken }: { shareToken: string }) => {
+      try {
+        const orderId = await resolveShareLinkOrderId(shareToken);
+        socket.join(roomFor(orderId));
+      } catch {
+        socket.emit("error", { message: "Link inválido ou expirado." });
       }
     });
 
