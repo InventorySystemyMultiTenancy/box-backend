@@ -18,13 +18,23 @@ teamRouter.get("/", async (_req, res) => {
       name: true,
       role: true,
       avatarUrl: true,
-      roleRef: { select: { name: true } },
+      roleRef: { select: { name: true, allowedTabs: true } },
     },
     orderBy: { createdAt: "asc" },
   });
 
+  // Perfil MECHANIC/ADMIN não basta — um cargo como "Motorista" (baseRole MECHANIC,
+  // mas allowedTabs restrito só a Caminhões) não deve aparecer como quem "assina o
+  // serviço". Só entra quem não tem cargo (mecânico/admin tradicional, sem restrição)
+  // ou cujo cargo inclui a aba Projetos — onde de fato se diagnostica/precifica reparo
+  // (cobre também um cargo tipo "Orçamentista", desde que enxergue Projetos).
+  const signsService = members.filter((member) => {
+    const allowedTabs = member.roleRef?.allowedTabs ?? [];
+    return allowedTabs.length === 0 || allowedTabs.includes("projects");
+  });
+
   res.json({
-    team: members.map((member) => ({
+    team: signsService.map((member) => ({
       id: member.id,
       name: member.name,
       role: member.roleRef?.name ?? ROLE_LABELS[member.role] ?? member.role,
