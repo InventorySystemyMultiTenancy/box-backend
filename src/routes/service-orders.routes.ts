@@ -8,6 +8,7 @@ import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS, SERVICE_ORDER_P
 import { nextOrderCode } from "@/lib/order-code";
 import { upload, persistUploadedFile } from "@/middleware/upload";
 import { recordAudit } from "@/services/audit.service";
+import { createOrGetShareLink, revokeShareLink, getActiveShareLink, ShareLinkError } from "@/services/share-link.service";
 
 export const serviceOrdersRouter = Router();
 
@@ -147,6 +148,32 @@ serviceOrdersRouter.get("/:id", requireAuth, async (req: AuthedRequest<{ id: str
   const order = await prisma.serviceOrder.findUnique({ where: { id: req.params.id }, include: orderInclude });
   if (!order) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
   res.json({ order: hidePricesForMechanic(order, req.user!.role) });
+});
+
+// Link público de acompanhamento (botão "Compartilhar" dentro do projeto) — deixa o
+// cliente ver o andamento sem login, por até 30 dias. Resolvido publicamente (sem
+// requireAuth) em GET /api/public/share/:token — ver public.routes.ts.
+serviceOrdersRouter.get("/:id/share-link", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const link = await getActiveShareLink(req.params.id);
+  res.json({ link: link ? { token: link.token, expiresAt: link.expiresAt } : null });
+});
+
+serviceOrdersRouter.post("/:id/share-link", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const order = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
+  if (!order) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+
+  const link = await createOrGetShareLink(req.params.id, req.user!.id);
+  res.status(201).json({ link: { token: link.token, expiresAt: link.expiresAt } });
+});
+
+serviceOrdersRouter.delete("/:id/share-link", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  try {
+    await revokeShareLink(req.params.id);
+    res.status(204).end();
+  } catch (err) {
+    if (err instanceof ShareLinkError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
 });
 
 const processSchema = z.object({
