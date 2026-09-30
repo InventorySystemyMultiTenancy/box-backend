@@ -20,6 +20,15 @@ export interface SearchAssistResult {
   actions: SearchAssistAction[];
 }
 
+export interface SearchAssistTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+// Cap de turnos anteriores repassados pra IA — o suficiente pra manter o fio da
+// conversa numa pergunta de uso sem deixar o prompt crescer sem limite.
+const MAX_HISTORY_TURNS = 12;
+
 // Rotas que a IA pode sugerir — mesma lista de abas do painel (src/app/dashboard/layout.tsx
 // no front). Qualquer path que a IA responda fora desta lista é descartado antes de
 // devolver ao cliente, pra nunca navegar o usuário para algo inexistente/inválido.
@@ -46,15 +55,17 @@ const KNOWN_ROUTES: SearchAssistAction[] = [
   { path: "/dashboard/perfil", label: "Perfil" },
 ];
 
-const SYSTEM_PROMPT = `Você é o assistente da BOX., um sistema de gestão de oficina mecânica. Um funcionário digitou algo na busca global do sistema e ela não encontrou nenhum registro (a busca de registros cobre: ordens de serviço, orçamentos, usuários/clientes, veículos, fornecedores, peças de estoque, caminhões e seguradoras).
+const SYSTEM_PROMPT = `Você é o assistente de ajuda da BOX., um sistema de gestão de oficina mecânica, incorporado na busca do painel administrativo. Você pode ser acionado de duas formas:
 
-Isso pode significar duas coisas:
-(A) A pessoa estava procurando um registro (cliente, OS, placa, peça...) mas digitou errado ou ele não existe.
-(B) A pessoa não está procurando um registro — está PERGUNTANDO como fazer algo no sistema, ou o que é/serve alguma aba, ex: "como cadastrar um cliente", "como avançar etapa", "como emitir nota fiscal", "como gerar relatório", "como funciona o pdv", "o que é essa aba?". Nesse caso é uma pergunta de uso, não uma busca.
+(1) PRIMEIRA MENSAGEM: um funcionário digitou algo na busca global e ela não encontrou nenhum registro (a busca de registros cobre: ordens de serviço, orçamentos, usuários/clientes, veículos, fornecedores, peças de estoque, caminhões e seguradoras). Isso pode significar duas coisas:
+  (A) A pessoa estava procurando um registro (cliente, OS, placa, peça...) mas digitou errado ou ele não existe.
+  (B) A pessoa não está procurando um registro — está PERGUNTANDO como fazer algo no sistema, ou o que é/serve alguma aba, ex: "como cadastrar um cliente", "como avançar etapa", "como emitir nota fiscal", "como gerar relatório", "como funciona o pdv", "o que é essa aba?". Nesse caso é uma pergunta de uso, não uma busca.
+
+(2) MENSAGENS SEGUINTES: se já existem mensagens anteriores nesta conversa (abaixo), a pessoa está continuando o papo — reformulando a pergunta, corrigindo você ("não era isso que eu queria, me ajude com..."), ou pedindo mais detalhes sobre o que você acabou de responder. Trate como uma conversa de verdade: leve em conta o que já foi dito, não recomece do zero nem repita o que já explicou, e ajuste a resposta ao que a pessoa realmente quer agora. Nesses casos considere sempre como pergunta de uso (caso B) — só a primeira mensagem pode ser uma busca de registro (caso A).
 
 Às vezes a pessoa cola a própria URL da página em que está (ex.: ".../dashboard/gastos") junto da pergunta — nesse caso o trecho depois de "/dashboard/" é o path de uma das rotas da lista abaixo; use isso pra saber exatamente de qual aba ela está falando, mesmo sem ela nomear a aba. Toda rota da lista abaixo é uma aba real e existente do sistema — nunca diga que uma delas "não existe".
 
-Se for o caso (B), gere um tutorial curto (3 a 5 passos, objetivos, na ordem em que a pessoa deve clicar/preencher) de como realizar aquilo, usando EXATAMENTE os nomes de botões/campos/abas descritos abaixo — nunca invente um botão ou campo que não está na lista. Aponte a aba certa em "actions". Se for o caso (A), não gere tutorial — só explique/sugira como no comportamento normal.
+Se for o caso (B), gere uma resposta curta e objetiva — com um tutorial de 3 a 5 passos quando fizer sentido, na ordem em que a pessoa deve clicar/preencher — usando EXATAMENTE os nomes de botões/campos/abas descritos abaixo — nunca invente um botão ou campo que não está na lista. Aponte a aba certa em "actions". Se for o caso (A), não gere tutorial — só explique/sugira como no comportamento normal.
 
 Responda SEMPRE em português, APENAS com um JSON válido, sem markdown, no formato:
 {
@@ -90,18 +101,23 @@ Rotas e o que dá pra fazer em cada uma (path — label — botões/ações reai
 
 Seja direto e útil, como alguém que conhece bem o sistema orientando um colega. Se a pergunta for vaga demais pra saber a qual aba se refere (ex.: "como cadastrar tal coisa" sem dizer o quê), pergunte de volta em "message" em vez de chutar um tutorial, e devolva "steps": null.`;
 
-export async function getSearchAssistance(query: string, currentPath?: string): Promise<SearchAssistResult> {
+export async function getSearchAssistance(query: string, currentPath?: string, history: SearchAssistTurn[] = []): Promise<SearchAssistResult> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new SearchAssistantError("Assistente de IA não configurado (defina OPENAI_API_KEY no ambiente).", 501);
   }
 
+  const isFirstMessage = history.length === 0;
+
   // Só repassa se bater com uma rota conhecida — currentPath vem do front, mas não custa
   // validar antes de colocar no prompt (evita mandar lixo/injeção pra IA como contexto).
   const currentRoute = currentPath ? KNOWN_ROUTES.find((r) => r.path === currentPath) : undefined;
-  const userContent = currentRoute
-    ? `A pessoa está atualmente na aba "${currentRoute.label}" (${currentRoute.path}). Texto que ela digitou na busca, sem resultados: "${query}"`
-    : `Texto digitado na busca, sem resultados: "${query}"`;
+  const routeHint = currentRoute ? `A pessoa está atualmente na aba "${currentRoute.label}" (${currentRoute.path}). ` : "";
+  const userContent = isFirstMessage ? `${routeHint}Texto digitado na busca, sem resultados: "${query}"` : `${routeHint}${query}`;
+
+  // Só os últimos N turnos — o bastante pra manter contexto sem deixar o prompt crescer
+  // sem limite numa conversa longa.
+  const trimmedHistory = history.slice(-MAX_HISTORY_TURNS);
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -115,6 +131,7 @@ export async function getSearchAssistance(query: string, currentPath?: string): 
       max_tokens: 500,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
+        ...trimmedHistory.map((turn) => ({ role: turn.role, content: turn.content })),
         { role: "user", content: userContent },
       ],
     }),
