@@ -4,7 +4,6 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
-
 export const approvalsRouter = Router({ mergeParams: true });
 
 approvalsRouter.get("/", requireAuth, async (req: AuthedRequest<{ orderId: string }>, res) => {
@@ -76,9 +75,7 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
     return res.status(409).json({ error: "Este problema ainda precisa ser precificado pelo admin." });
   }
 
-  let result;
-  try {
-    result = await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const approval = await tx.approval.update({
       where: { id: req.params.approvalId },
       data: {
@@ -88,34 +85,6 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
       },
       include: { media: true, partUsages: { include: { inventoryPart: true } } },
     });
-
-    if (isApproved && approval.stockAppliedAt == null && approval.partUsages.length > 0) {
-      for (const usage of approval.partUsages) {
-        if (usage.inventoryPart.stockQty < usage.quantity) {
-          throw new Error("INSUFFICIENT_STOCK");
-        }
-        await tx.inventoryPart.update({
-          where: { id: usage.inventoryPartId },
-          data: { stockQty: { decrement: usage.quantity } },
-        });
-        await tx.financialEntry.create({
-          data: {
-            type: "EXPENSE",
-            category: "PEÇA",
-            description: `${usage.quantity}x ${usage.inventoryPart.name} usado em problema aprovado`,
-            amount: usage.unitCostSnapshot * usage.quantity,
-            serviceOrderId: orderId,
-            approvalId: approval.id,
-            inventoryPartId: usage.inventoryPartId,
-            partUsageId: usage.id,
-          },
-        });
-      }
-      await tx.approval.update({
-        where: { id: approval.id },
-        data: { stockAppliedAt: new Date() },
-      });
-    }
 
     const event = await tx.timelineEvent.create({
       data: {
@@ -139,13 +108,7 @@ approvalsRouter.patch("/:approvalId", requireAuth, async (req: AuthedRequest<{ o
     }
 
       return { approval, event, part };
-    });
-  } catch (err) {
-    if (err instanceof Error && err.message === "INSUFFICIENT_STOCK") {
-      return res.status(409).json({ error: "Estoque insuficiente para aprovar este problema." });
-    }
-    throw err;
-  }
+  });
 
   const { approval, event, part } = result;
 

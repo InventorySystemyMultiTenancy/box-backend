@@ -112,7 +112,8 @@ export interface ReceiveItemInput {
   receivedQty: number;
 }
 
-// Dá entrada (total ou parcial) dos itens no estoque e recalcula o status do pedido.
+// Registra o recebimento (total ou parcial) dos itens e recalcula o status do pedido.
+// Não há estoque — só acompanha o que o fornecedor já entregou.
 export async function receivePurchaseOrder(id: string, receipts: ReceiveItemInput[]) {
   const order = await prisma.purchaseOrder.findUnique({ where: { id }, include: { items: true } });
   if (!order) throw new PurchaseOrderError("Pedido de compra não encontrado.", 404);
@@ -130,10 +131,6 @@ export async function receivePurchaseOrder(id: string, receipts: ReceiveItemInpu
       await tx.purchaseOrderItem.update({
         where: { id: item.id },
         data: { receivedQty: { increment: receipt.receivedQty } },
-      });
-      await tx.inventoryPart.update({
-        where: { id: item.inventoryPartId },
-        data: { stockQty: { increment: receipt.receivedQty } },
       });
     }
 
@@ -154,50 +151,6 @@ export async function cancelPurchaseOrder(id: string) {
   if (!order) throw new PurchaseOrderError("Pedido de compra não encontrado.", 404);
   if (order.status === "RECEIVED") throw new PurchaseOrderError("Não é possível cancelar um pedido já recebido.", 409);
   return prisma.purchaseOrder.update({ where: { id }, data: { status: "CANCELLED" } });
-}
-
-// Peças com estoque no ponto mínimo ou abaixo — quantidade sugerida é o suficiente
-// para chegar em reorderQty (ou o dobro do mínimo, se reorderQty não foi definido).
-export async function listReplenishmentSuggestions() {
-  const parts = await prisma.inventoryPart.findMany({
-    where: { active: true, minStockQty: { gt: 0 } },
-    include: { preferredSupplier: true },
-  });
-
-  return parts
-    .filter((p) => p.stockQty <= p.minStockQty)
-    .map((p) => {
-      const target = p.reorderQty > p.stockQty ? p.reorderQty : p.minStockQty * 2;
-      return { ...p, suggestedQty: Math.max(0, target - p.stockQty) };
-    })
-    .filter((p) => p.suggestedQty > 0);
-}
-
-// Gera um rascunho de pedido de compra por fornecedor preferencial, agrupando todas
-// as peças sugeridas para reposição que apontam para aquele fornecedor.
-export async function createPurchaseOrdersFromSuggestions() {
-  const suggestions = await listReplenishmentSuggestions();
-  const withSupplier = suggestions.filter((s) => s.preferredSupplierId);
-  const withoutSupplier = suggestions.filter((s) => !s.preferredSupplierId);
-
-  const bySupplier = new Map<string, typeof withSupplier>();
-  for (const part of withSupplier) {
-    const list = bySupplier.get(part.preferredSupplierId!) ?? [];
-    list.push(part);
-    bySupplier.set(part.preferredSupplierId!, list);
-  }
-
-  const created = [];
-  for (const [supplierId, parts] of bySupplier) {
-    const order = await createPurchaseOrder({
-      supplierId,
-      notes: "Gerado automaticamente a partir de sugestões de reposição de estoque.",
-      items: parts.map((p) => ({ inventoryPartId: p.id, quantity: p.suggestedQty, unitCost: p.unitCost })),
-    });
-    created.push(order);
-  }
-
-  return { created, skippedWithoutSupplier: withoutSupplier };
 }
 
 function defaultDueDate() {

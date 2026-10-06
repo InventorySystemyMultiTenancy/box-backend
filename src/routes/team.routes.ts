@@ -12,7 +12,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 teamRouter.get("/", async (_req, res) => {
   const members = await prisma.user.findMany({
-    where: { role: { in: ["MECHANIC", "ADMIN"] } },
+    where: { role: { in: ["MECHANIC", "ADMIN"] }, active: true },
     select: {
       id: true,
       name: true,

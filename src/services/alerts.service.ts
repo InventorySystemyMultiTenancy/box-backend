@@ -22,7 +22,7 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
   const tomorrowEnd = new Date(tomorrowStart);
   tomorrowEnd.setHours(23, 59, 59, 999);
 
-  const [staleOrders, pendingSupplements, lowStockParts, inspectionsToday, deliveriesTomorrow, overduePayables] = await Promise.all([
+  const [staleOrders, pendingSupplements, inspectionsToday, deliveriesTomorrow, overduePayables] = await Promise.all([
     prisma.serviceOrder.findMany({
       where: { status: { notIn: ["READY_FOR_PICKUP"] }, updatedAt: { lte: staleThreshold } },
       include: { vehicle: true },
@@ -31,7 +31,6 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
       where: { kind: "SUPPLEMENT", status: "PENDING", createdAt: { lte: supplementThreshold } },
       include: { serviceOrder: { include: { vehicle: true } } },
     }),
-    prisma.inventoryPart.findMany({ where: { active: true, minStockQty: { gt: 0 } } }),
     prisma.inspection.findMany({
       where: { status: "SCHEDULED", scheduledAt: { gte: todayStart, lte: todayEnd } },
       include: { serviceOrder: { include: { vehicle: true } } },
@@ -67,14 +66,6 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
       message: `Complemento pendente há ${days} dias — ${approval.serviceOrder.code} (${approval.serviceOrder.vehicle.plate ?? approval.serviceOrder.vehicle.model}).`,
     });
   }
-  for (const part of lowStockParts.filter((p) => p.stockQty <= p.minStockQty)) {
-    candidates.push({
-      type: "LOW_STOCK",
-      entity: "InventoryPart",
-      entityId: part.id,
-      message: `Estoque de ${part.name} abaixo do mínimo (${part.stockQty}/${part.minStockQty}).`,
-    });
-  }
   for (const inspection of inspectionsToday) {
     candidates.push({
       type: "INSPECTION_TODAY",
@@ -108,6 +99,8 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
 // lida para o mesmo tipo+entidade. Chamado sob demanda (GET /api/alerts), sem
 // depender de um job/cron (não há infraestrutura de background job no projeto).
 export async function refreshAlerts() {
+  // Sem controle de estoque, alertas antigos de "estoque baixo" não fazem mais sentido.
+  await prisma.notification.updateMany({ where: { type: "LOW_STOCK", read: false }, data: { read: true } });
   const candidates = await computeCandidates();
 
   for (const candidate of candidates) {

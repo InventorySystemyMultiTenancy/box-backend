@@ -14,9 +14,29 @@ const storage = multer.diskStorage({
   },
 });
 
+export class UploadTypeError extends Error {}
+
+// Arquivos enviados ficam públicos em /uploads — só aceita mídia e PDF. SVG fica de fora
+// mesmo sendo "image/*" porque pode carregar script; extensões executáveis/HTML são
+// recusadas mesmo que o navegador declare um mimetype permitido.
+const ALLOWED_MIME_PREFIXES = ["image/", "video/", "audio/"];
+const ALLOWED_MIME_TYPES = new Set(["application/pdf"]);
+const BLOCKED_EXTENSIONS = new Set([".svg", ".svgz", ".html", ".htm", ".xhtml", ".js", ".mjs", ".exe", ".bat", ".cmd", ".sh", ".php", ".msi", ".dll"]);
+
+export function isAllowedUpload(mimetype: string, originalname: string) {
+  const ext = path.extname(originalname).toLowerCase();
+  if (BLOCKED_EXTENSIONS.has(ext)) return false;
+  if (mimetype === "image/svg+xml") return false;
+  return ALLOWED_MIME_TYPES.has(mimetype) || ALLOWED_MIME_PREFIXES.some((prefix) => mimetype.startsWith(prefix));
+}
+
 export const upload = multer({
   storage,
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB — suficiente para foto/áudio/vídeo curto de diagnóstico
+  fileFilter: (_req, file, cb) => {
+    if (isAllowedUpload(file.mimetype, file.originalname)) return cb(null, true);
+    cb(new UploadTypeError("Tipo de arquivo não permitido. Envie foto, vídeo, áudio ou PDF."));
+  },
 });
 
 export function guessMediaType(mimetype: string): "PHOTO" | "VIDEO" | "AUDIO" | "DOCUMENT" {

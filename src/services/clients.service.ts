@@ -1,6 +1,8 @@
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { roundMoney } from "@/services/finance-rules";
+import { dropDuplicatedOrderIncome } from "@/services/service-order-billing.service";
 import { parsePageParams, paginated } from "@/lib/pagination";
 
 export class ClientError extends Error {
@@ -91,12 +93,20 @@ export async function getClientDetail(id: string) {
   const quoteRequests = client.user?.vehicles.flatMap((v) => v.quoteRequests) ?? [];
 
   const orderIds = serviceOrders.map((o) => o.id);
-  const totalSpentResult = orderIds.length
-    ? await prisma.financialEntry.aggregate({
-        where: { serviceOrderId: { in: orderIds }, type: "INCOME" },
-        _sum: { amount: true },
-      })
-    : null;
+  // Total gasto = o que o cliente de fato pagou nas OS dele (contas a receber recebidas) +
+  // receita lançada do jeito antigo em OS que nunca ganharam conta a receber.
+  let totalSpent = 0;
+  if (orderIds.length) {
+    const [legacyEntries, received] = await Promise.all([
+      prisma.financialEntry
+        .findMany({ where: { serviceOrderId: { in: orderIds }, type: "INCOME" }, select: { type: true, category: true, serviceOrderId: true, amount: true } })
+        .then(dropDuplicatedOrderIncome),
+      prisma.accountReceivable.findMany({ where: { serviceOrderId: { in: orderIds }, status: "RECEIVED" }, select: { amount: true, receivedAmount: true } }),
+    ]);
+    totalSpent = roundMoney(
+      legacyEntries.reduce((sum, e) => sum + e.amount, 0) + received.reduce((sum, r) => sum + (r.receivedAmount ?? r.amount), 0)
+    );
+  }
 
   const lastVisit = serviceOrders
     .map((o) => o.completedAt ?? o.receivedAt)
@@ -108,7 +118,7 @@ export async function getClientDetail(id: string) {
     vehicles: client.user?.vehicles.map(({ serviceOrders: _so, quoteRequests: _qr, ...v }) => v) ?? [],
     serviceOrders,
     quoteRequests,
-    totalSpent: totalSpentResult?._sum.amount ?? 0,
+    totalSpent,
     lastVisit: lastVisit ?? null,
   };
 }

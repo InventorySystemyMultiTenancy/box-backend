@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { prisma, toNumber } from "@/lib/prisma";
 
 export class BankAccountError extends Error {
   constructor(message: string, public status: number) {
@@ -61,7 +61,7 @@ async function withBalance<T extends { id: string; initialBalance: number }>(acc
   ]);
 
   const currentBalance =
-    account.initialBalance + (received._sum.receivedAmount ?? 0) - (paid._sum.paidAmount ?? 0);
+    account.initialBalance + (toNumber(received._sum.receivedAmount) ?? 0) - (toNumber(paid._sum.paidAmount) ?? 0);
 
   return { ...account, currentBalance };
 }

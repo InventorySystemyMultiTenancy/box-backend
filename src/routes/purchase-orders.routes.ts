@@ -9,8 +9,6 @@ import {
   sendPurchaseOrder,
   receivePurchaseOrder,
   cancelPurchaseOrder,
-  listReplenishmentSuggestions,
-  createPurchaseOrdersFromSuggestions,
   PurchaseOrderError,
 } from "@/services/purchase-orders.service";
 
@@ -37,16 +35,6 @@ const receiveSchema = z.object({
 purchaseOrdersRouter.get("/", requireAuth, requirePermission("purchases", "view"), async (req, res) => {
   const result = await listPurchaseOrders(req.query as Record<string, unknown>);
   res.json(result);
-});
-
-purchaseOrdersRouter.get("/replenishment-suggestions", requireAuth, requirePermission("purchases", "view"), async (_req, res) => {
-  const suggestions = await listReplenishmentSuggestions();
-  res.json({ suggestions });
-});
-
-purchaseOrdersRouter.post("/from-suggestions", requireAuth, requirePermission("purchases", "manage"), async (_req, res) => {
-  const result = await createPurchaseOrdersFromSuggestions();
-  res.status(201).json(result);
 });
 
 purchaseOrdersRouter.get("/:id", requireAuth, requirePermission("purchases", "view"), async (req: AuthedRequest<{ id: string }>, res) => {

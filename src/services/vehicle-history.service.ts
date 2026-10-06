@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { prisma, toNumber } from "@/lib/prisma";
 import { REVISION_ALERT_MONTHS } from "@/lib/constants";
 
 export class VehicleHistoryError extends Error {
@@ -39,7 +39,7 @@ export async function getVehicleHistory(vehicleId: string) {
   return {
     vehicle: { id: vehicle.id, brand: vehicle.brand, model: vehicle.model, year: vehicle.year, plate: vehicle.plate, mileage: vehicle.mileage, owner: vehicle.owner },
     serviceOrders: vehicle.serviceOrders,
-    totalSpent: totalSpentResult?._sum.receivedAmount ?? 0,
+    totalSpent: toNumber(totalSpentResult?._sum.receivedAmount) ?? 0,
     lastServiceAt: lastServiceDate ?? null,
     monthsSinceLastService,
     revisionDue: monthsSinceLastService !== null && monthsSinceLastService >= REVISION_ALERT_MONTHS,

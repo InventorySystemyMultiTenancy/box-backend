@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { dropDuplicatedOrderIncome } from "@/services/service-order-billing.service";
 
 export interface PeriodQuery {
   from?: string;
@@ -45,10 +46,12 @@ export async function getCashFlow(query: PeriodQuery) {
       where: { status: "PAID", ...periodWhere("paidAt", query) },
       orderBy: { paidAt: "asc" },
     }),
-    prisma.financialEntry.findMany({
-      where: periodWhere("occurredAt", query),
-      orderBy: { occurredAt: "asc" },
-    }),
+    prisma.financialEntry
+      .findMany({
+        where: periodWhere("occurredAt", query),
+        orderBy: { occurredAt: "asc" },
+      })
+      .then(dropDuplicatedOrderIncome),
     loadPartsCost(query),
     prisma.bankAccount.findMany({ where: { active: true }, select: { initialBalance: true } }),
   ]);
@@ -110,10 +113,12 @@ export async function getDRE(query: PeriodQuery) {
       where: { status: "PAID", ...periodWhere("paidAt", query) },
       select: { paidAmount: true, amount: true, category: true },
     }),
-    prisma.financialEntry.findMany({
-      where: periodWhere("occurredAt", query),
-      select: { type: true, amount: true, category: true },
-    }),
+    prisma.financialEntry
+      .findMany({
+        where: periodWhere("occurredAt", query),
+        select: { type: true, amount: true, category: true, serviceOrderId: true },
+      })
+      .then(dropDuplicatedOrderIncome),
     loadPartsCost(query),
   ]);
 

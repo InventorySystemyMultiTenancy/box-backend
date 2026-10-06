@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { parsePageParams, paginated } from "@/lib/pagination";
+import { splitInstallments } from "@/services/finance-rules";
 
 export class PayableError extends Error {
   constructor(message: string, public status: number) {
@@ -46,21 +47,17 @@ export interface UpdatePayableInput {
 // Uma compra parcelada vira N registros com o mesmo groupId, vencendo em meses
 // consecutivos a partir da dueDate informada — cada parcela é baixada individualmente.
 export async function createAccountsPayable(input: AccountPayableInput) {
-  const installments = Math.max(1, Math.floor(input.installments ?? 1));
+  const parts = splitInstallments(input.amount, input.installments ?? 1, new Date(input.dueDate));
+  const installments = parts.length;
   const groupId = installments > 1 ? randomUUID() : undefined;
-  const baseDueDate = new Date(input.dueDate);
-  const baseAmount = Math.floor((input.amount / installments) * 100) / 100;
-  const remainder = Math.round((input.amount - baseAmount * installments) * 100) / 100;
 
-  const rows = Array.from({ length: installments }, (_, i) => {
-    const dueDate = new Date(baseDueDate);
-    dueDate.setMonth(dueDate.getMonth() + i);
+  const rows = parts.map((part, i) => {
     return {
       description: input.description,
       category: input.category,
       payeeName: input.payeeName,
-      amount: i === installments - 1 ? baseAmount + remainder : baseAmount,
-      dueDate,
+      amount: part.amount,
+      dueDate: part.dueDate,
       paymentMethod: input.paymentMethod,
       bankAccountId: input.bankAccountId,
       notes: input.notes,
@@ -71,12 +68,9 @@ export async function createAccountsPayable(input: AccountPayableInput) {
     };
   });
 
-  await prisma.accountPayable.createMany({ data: rows });
-  return prisma.accountPayable.findMany({
-    where: groupId ? { groupId } : { description: input.description, payeeName: input.payeeName },
-    orderBy: { dueDate: "asc" },
-    take: installments,
-  });
+  // Devolve exatamente as linhas criadas — buscar por descrição/beneficiário depois podia
+  // devolver uma conta antiga com o mesmo texto quando não havia parcelamento (sem groupId).
+  return prisma.accountPayable.createManyAndReturn({ data: rows });
 }
 
 export async function listAccountsPayable(query: Record<string, unknown>) {

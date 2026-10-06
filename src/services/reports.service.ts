@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import { LEGACY_ORDER_INCOME_CATEGORIES, roundMoney } from "@/services/finance-rules";
+import { dropDuplicatedOrderIncome } from "@/services/service-order-billing.service";
 
 export interface PeriodQuery {
   from?: string;
@@ -10,29 +12,95 @@ function range({ from, to }: PeriodQuery) {
 }
 
 export async function getDashboardReport(query: PeriodQuery) {
-  const [revenue, approvalStats, quoteStats, mechanicProductivity, turnover, lowStock, averageRepairTime, occupancy, stages] = await Promise.all([
+  const [revenue, approvalStats, quoteStats, mechanicProductivity, partsUsage, averageRepairTime, occupancy, stages] = await Promise.all([
     getRevenue(query),
     getApprovalRate(query),
     getQuoteAcceptanceRate(query),
     getMechanicProductivity(query),
-    getInventoryTurnover(query),
-    getLowStockCount(),
+    getPartsUsage(query),
     getAverageRepairTime(query),
     getWorkshopOccupancy(),
     getOrdersByStageAndSector(),
   ]);
 
-  return { revenue, approvalStats, quoteStats, mechanicProductivity, turnover, lowStock, averageRepairTime, occupancy, stages };
+  return { revenue, approvalStats, quoteStats, mechanicProductivity, partsUsage, averageRepairTime, occupancy, stages };
 }
 
+// Faturamento recebido no período: contas a receber baixadas + receita de OS lançada do
+// jeito antigo (sem duplicar com conta a receber). Ticket médio é por OS/venda, não por
+// parcela — uma OS em 3x conta como um atendimento só.
 async function getRevenue(query: PeriodQuery) {
-  const receivables = await prisma.accountReceivable.findMany({
-    where: { status: "RECEIVED", receivedAt: range(query) },
-    select: { receivedAmount: true },
-  });
-  const total = receivables.reduce((sum, r) => sum + (r.receivedAmount ?? 0), 0);
-  const count = receivables.length;
-  return { total, count, ticketMedio: count > 0 ? total / count : 0 };
+  const [receivables, legacyEntries] = await Promise.all([
+    prisma.accountReceivable.findMany({
+      where: { status: "RECEIVED", receivedAt: range(query) },
+      select: { id: true, receivedAmount: true, amount: true, serviceOrderId: true, groupId: true },
+    }),
+    prisma.financialEntry
+      .findMany({
+        where: { type: "INCOME", category: { in: [...LEGACY_ORDER_INCOME_CATEGORIES] }, occurredAt: range(query) },
+        select: { type: true, category: true, serviceOrderId: true, amount: true },
+      })
+      .then(dropDuplicatedOrderIncome),
+  ]);
+  const total = roundMoney(
+    receivables.reduce((sum, r) => sum + (r.receivedAmount ?? r.amount), 0) + legacyEntries.reduce((sum, e) => sum + e.amount, 0)
+  );
+  const attendances = new Set([
+    ...receivables.map((r) => r.serviceOrderId ?? r.groupId ?? r.id),
+    ...legacyEntries.map((e) => e.serviceOrderId!),
+  ]);
+  const count = attendances.size;
+  return { total, count, ticketMedio: count > 0 ? roundMoney(total / count) : 0 };
+}
+
+/**
+ * Indicadores do topo do painel (admin): faturamento recebido no mês, OS entregues e ticket
+ * médio do que foi entregue, tempo médio de reparo, OS em andamento por etapa e o que
+ * está a receber (em aberto e vencido).
+ */
+export async function getHomeKpis() {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const month = { from: monthStart.toISOString(), to: now.toISOString() };
+
+  const [revenue, repairTime, delivered, activeByStatus, openReceivables] = await Promise.all([
+    getRevenue(month),
+    getAverageRepairTime(month),
+    prisma.serviceOrder.findMany({
+      where: { completedAt: { gte: monthStart, lte: now } },
+      select: {
+        id: true,
+        accountsReceivable: { where: { status: { not: "CANCELLED" } }, select: { amount: true } },
+        financialEntries: { where: { type: "INCOME", category: { in: [...LEGACY_ORDER_INCOME_CATEGORIES] } }, select: { amount: true } },
+      },
+    }),
+    prisma.serviceOrder.groupBy({
+      by: ["status"],
+      where: { archivedAt: null, status: { not: "READY_FOR_PICKUP" } },
+      _count: { _all: true },
+    }),
+    prisma.accountReceivable.findMany({
+      where: { status: { in: ["PENDING", "OVERDUE"] } },
+      select: { amount: true, dueDate: true },
+    }),
+  ]);
+
+  const billedDelivered = delivered.reduce((sum, o) => {
+    const billed = o.accountsReceivable.length > 0 ? o.accountsReceivable : o.financialEntries;
+    return sum + billed.reduce((s, r) => s + r.amount, 0);
+  }, 0);
+
+  return {
+    monthRevenue: revenue.total,
+    deliveredCount: delivered.length,
+    deliveredBilled: roundMoney(billedDelivered),
+    averageTicket: delivered.length > 0 ? roundMoney(billedDelivered / delivered.length) : 0,
+    averageRepairDays: repairTime.averageDays,
+    activeOrders: activeByStatus.reduce((sum, s) => sum + s._count._all, 0),
+    byStatus: activeByStatus.map((s) => ({ status: s.status, count: s._count._all })),
+    receivableOpen: roundMoney(openReceivables.reduce((sum, r) => sum + r.amount, 0)),
+    receivableOverdue: roundMoney(openReceivables.filter((r) => r.dueDate < now).reduce((sum, r) => sum + r.amount, 0)),
+  };
 }
 
 async function getApprovalRate(query: PeriodQuery) {
@@ -76,24 +144,26 @@ async function getMechanicProductivity(query: PeriodQuery) {
   return Array.from(byMechanic.values()).sort((a, b) => b.completedParts - a.completedParts);
 }
 
-// Giro de estoque = custo das peças consumidas no período / valor médio de estoque atual
-// (aproximação — não há histórico de saldo de estoque para um cálculo exato por período).
-async function getInventoryTurnover(query: PeriodQuery) {
-  const [usages, parts] = await Promise.all([
-    prisma.problemPartUsage.findMany({ where: { createdAt: range(query) }, select: { unitCostSnapshot: true, quantity: true } }),
-    prisma.inventoryPart.findMany({ where: { active: true }, select: { stockQty: true, unitCost: true } }),
-  ]);
-  const cogs = usages.reduce((sum, u) => sum + u.unitCostSnapshot * u.quantity, 0);
-  const inventoryValue = parts.reduce((sum, p) => sum + p.stockQty * p.unitCost, 0);
-  return { cogs, inventoryValue, turnoverRatio: inventoryValue > 0 ? cogs / inventoryValue : 0 };
-}
-
-async function getLowStockCount() {
-  const parts = await prisma.inventoryPart.findMany({
-    where: { active: true, minStockQty: { gt: 0 } },
-    select: { stockQty: true, minStockQty: true },
+// Peças usadas em projetos no período (problemas não reprovados) — valor total e as mais
+// usadas. Substitui o antigo "giro de estoque", já que não há mais controle de estoque.
+async function getPartsUsage(query: PeriodQuery) {
+  const usages = await prisma.problemPartUsage.findMany({
+    where: { createdAt: range(query), approval: { status: { not: "REJECTED" } } },
+    select: { quantity: true, unitCostSnapshot: true, inventoryPart: { select: { id: true, name: true } } },
   });
-  return parts.filter((p) => p.stockQty <= p.minStockQty).length;
+  const byPart = new Map<string, { partId: string; name: string; quantity: number; value: number }>();
+  for (const u of usages) {
+    const row = byPart.get(u.inventoryPart.id) ?? { partId: u.inventoryPart.id, name: u.inventoryPart.name, quantity: 0, value: 0 };
+    row.quantity += u.quantity;
+    row.value = roundMoney(row.value + u.quantity * u.unitCostSnapshot);
+    byPart.set(u.inventoryPart.id, row);
+  }
+  const top = [...byPart.values()].sort((a, b) => b.quantity - a.quantity);
+  return {
+    totalValue: roundMoney(top.reduce((sum, p) => sum + p.value, 0)),
+    totalQuantity: top.reduce((sum, p) => sum + p.quantity, 0),
+    topParts: top.slice(0, 10),
+  };
 }
 
 // Tempo médio de reparo = média de (completedAt - receivedAt) das OS concluídas no período.
@@ -132,20 +202,26 @@ export async function getOrdersByStageAndSector() {
 // mão de obra (TimeEntry x custo/hora) - descontos ⇒ custo/lucro/margem. Reaproveita
 // dados já existentes, sem novo módulo de captura.
 export async function getServiceOrderProfitability(serviceOrderId: string) {
-  const [receivables, partUsages, timeEntries, order] = await Promise.all([
-    prisma.accountReceivable.findMany({ where: { serviceOrderId }, select: { amount: true, status: true } }),
+  const [receivables, partUsages, timeEntries, legacyIncome] = await Promise.all([
+    prisma.accountReceivable.findMany({ where: { serviceOrderId, status: { not: "CANCELLED" } }, select: { amount: true, status: true } }),
     prisma.problemPartUsage.findMany({
-      where: { approval: { serviceOrderId } },
+      where: { approval: { serviceOrderId, status: { not: "REJECTED" } } },
       select: { quantity: true, unitCostSnapshot: true },
     }),
     prisma.timeEntry.findMany({
       where: { serviceOrderId },
       include: { employee: { select: { commissionRate: true } } },
     }),
-    prisma.serviceOrder.findUnique({ where: { id: serviceOrderId }, select: { deliveryExtraValue: true } }),
+    prisma.financialEntry.findMany({
+      where: { serviceOrderId, type: "INCOME", category: { in: [...LEGACY_ORDER_INCOME_CATEGORIES] } },
+      select: { amount: true },
+    }),
   ]);
 
-  const revenue = receivables.reduce((sum, r) => sum + r.amount, 0) + (order?.deliveryExtraValue ?? 0);
+  // A cobrança da OS (já com o valor extra da entrega) está nas contas a receber; OS
+  // antigas, cobradas antes disso, só têm o lançamento de receita da entrega.
+  const revenue =
+    receivables.length > 0 ? receivables.reduce((sum, r) => sum + r.amount, 0) : legacyIncome.reduce((sum, e) => sum + e.amount, 0);
   const partsCost = partUsages.reduce((sum, u) => sum + u.quantity * u.unitCostSnapshot, 0);
   const laborHours = timeEntries.reduce((sum, t) => {
     const end = t.endedAt ?? new Date();

@@ -36,6 +36,7 @@ Contas criadas pelo seed:
 
 ## Scripts
 
+- `npm test` — testes automatizados (Vitest) das regras de financeiro e upload
 - `npm run dev` — servidor com reload automático
 - `npm run build` / `npm start` — build de produção e execução
 - `npm run prisma:migrate` — cria/atualiza o schema do banco
@@ -92,6 +93,19 @@ o backend tem um módulo de gestão financeira completo:
   (gera número sequencial local, sem SEFAZ/prefeitura). Trocar por um gateway real (eNotas, Focus NFe...)
   é implementar essa mesma interface — vai precisar de certificado digital e contrato com o gateway.
 
+**Cobrança da OS:** ao finalizar a entrega (`PATCH /api/service-orders/:id/finalize`) a OS gera
+conta(s) a receber (à vista ou parcelada, já recebida ou não) — não mais um `FinancialEntry`
+"PROJETO". A receita só entra no Resumo/Fluxo de caixa/DRE quando a conta é recebida. OS antigas
+que têm o lançamento "PROJETO"/"ENTREGA_EXTRA" **e** conta a receber contam uma vez só (regras em
+`src/services/finance-rules.ts`). Valores em dinheiro são `NUMERIC(12,2)` no banco; a extensão em
+`src/lib/prisma.ts` os entrega como `number` ao código.
+
+**Peças (sem estoque):** `InventoryPart` é só um catálogo de peças com preço (`unitCost`), usado nos
+projetos e no PDV. Não há controle de quantidade: nada é baixado ao usar/vender, receber um pedido de
+compra só registra o que chegou, e não existem mais alerta de estoque baixo nem sugestão de reposição.
+As colunas `stockQty`/`minStockQty`/`reorderQty`/`Approval.stockAppliedAt` continuam no banco (dados
+antigos preservados), mas não são lidas nem gravadas.
+
 Todas as rotas novas exigem permissão granular (`finance.view`/`finance.manage`,
 `invoices.view`/`invoices.manage`), não o `role` legado.
 
@@ -100,11 +114,7 @@ Todas as rotas novas exigem permissão granular (`finance.view`/`finance.manage`
 - **Fornecedores** (`/api/suppliers`) — cadastro simples (permissões `suppliers.view`/`suppliers.manage`).
 - **Pedidos de compra** (`/api/purchase-orders`) — `DRAFT → SENT → PARTIALLY_RECEIVED/RECEIVED → CANCELLED`.
   Enviar um pedido (`/:id/send`) gera automaticamente uma `AccountPayable` no valor total dos itens.
-  Receber (`/:id/receive`, parcial ou total) dá entrada no estoque (`InventoryPart.stockQty`).
-- **Reposição por ponto mínimo** — `InventoryPart` tem `minStockQty`/`reorderQty`/`preferredSupplierId`.
-  `GET /api/purchase-orders/replenishment-suggestions` lista peças no ponto mínimo ou abaixo com a
-  quantidade sugerida; `POST /api/purchase-orders/from-suggestions` gera um rascunho de pedido por
-  fornecedor preferencial automaticamente.
+  Receber (`/:id/receive`, parcial ou total) só registra o que o fornecedor já entregou — não há estoque.
 
 ## Agenda
 
@@ -115,6 +125,17 @@ Todas as rotas novas exigem permissão granular (`finance.view`/`finance.manage`
   (`serviceOrderId`) ou ser um agendamento avulso.
 - **Carga de trabalho por mecânico** — `GET /api/agenda/appointments/workload?from=&to=`.
 - **Ocupação de box/elevador** — `GET /api/agenda/appointments/bay-occupancy?from=&to=`.
+
+## Acesso e segurança
+
+- Usuário desativado (`active=false`, botão em Usuários) perde o acesso na hora: `requireAuth`
+  confere o usuário no banco a cada requisição e usa o perfil atual, não o gravado no token.
+- Login tem limite de 10 tentativas erradas por IP a cada 15 min.
+- "Esqueci minha senha" envia link por e-mail via SMTP (`SMTP_*` no `.env`); sem SMTP, o link sai
+  no log do servidor. Cada usuário também troca a própria senha em Meu perfil.
+- Upload aceita só foto, vídeo, áudio e PDF (sem SVG/HTML/executáveis).
+- Em produção o servidor não sobe sem `JWT_SECRET`.
+- Rotina de hora em hora (`src/jobs/scheduler.ts`) recalcula alertas e marca contas vencidas.
 
 ## Tempo real
 

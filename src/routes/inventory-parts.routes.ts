@@ -7,18 +7,19 @@ import { recordAudit } from "@/services/audit.service";
 
 export const inventoryPartsRouter = Router();
 
+// Peça é só um item de catálogo com preço (unitCost) — usada em projetos e vendida no PDV.
+// Não há controle de estoque: as colunas stockQty/minStockQty/reorderQty continuam no banco
+// (dados antigos preservados), mas não são mais lidas nem gravadas pelo sistema.
 const partSchema = z.object({
   name: z.string().min(2),
   sku: z.string().optional(),
   description: z.string().optional(),
   kind: z.enum(["PART", "MATERIAL"]).optional(),
   unitCost: z.coerce.number().min(0),
-  stockQty: z.coerce.number().int().min(0),
-  minStockQty: z.coerce.number().int().min(0).optional(),
-  reorderQty: z.coerce.number().int().min(0).optional(),
   preferredSupplierId: z.string().optional(),
   storeId: z.string().optional(),
-  active: z.coerce.boolean().optional(),
+  // Chega como texto (multipart) — z.coerce.boolean() trataria "false" como true.
+  active: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
 });
 
 inventoryPartsRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
@@ -66,14 +67,14 @@ inventoryPartsRouter.patch("/:id", requireAuth, requireRole("ADMIN"), upload.sin
     },
   });
 
-  if (before && before.stockQty !== part.stockQty) {
+  if (before && before.unitCost !== part.unitCost) {
     await recordAudit({
       userId: req.user!.id,
       action: "UPDATE",
       entity: "InventoryPart",
       entityId: part.id,
-      before: { stockQty: before.stockQty },
-      after: { stockQty: part.stockQty },
+      before: { unitCost: before.unitCost },
+      after: { unitCost: part.unitCost },
     });
   }
 

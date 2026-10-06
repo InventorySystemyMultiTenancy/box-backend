@@ -1,8 +1,5 @@
-import { prisma } from "@/lib/prisma";
+import { nextSequenceCode } from "@/lib/order-code";
 
-export async function nextPurchaseOrderCode() {
-  const year = new Date().getFullYear();
-  const count = await prisma.purchaseOrder.count();
-  const seq = String(count + 1).padStart(5, "0");
-  return `PC-${year}-${seq}`;
+export function nextPurchaseOrderCode() {
+  return nextSequenceCode("PurchaseOrder_code_seq", "PC");
 }

@@ -24,7 +24,12 @@ model User {
   commissionRate Float?
   // Jornada semanal (horas) — usada só no cálculo de capacidade produtiva (Fase 5).
   weeklyHours    Float?
+  // Desativado = não consegue mais entrar nem usar um token já emitido (ex-funcionário).
+  // Nunca apaga o usuário: ele continua autor de eventos, comissões, viagens etc.
+  active         Boolean  @default(true)
   createdAt      DateTime @default(now())
+
+  passwordResetTokens PasswordResetToken[]
 
   // Cargo (Role) — granularidade fina de permissões, além do `role` acima que
   // continua sendo usado pelas rotas legadas (requireRole). Só STAFF tem cargo.
@@ -43,19 +48,33 @@ model User {
   commissions             Commission[]     @relation("MechanicCommissions")
   financialEntriesLogged  FinancialEntry[] @relation("FinancialEntryCreatedBy")
 
-  serviceOrdersAsConsultant   ServiceOrder[]    @relation("ServiceOrderConsultant")
-  serviceOrdersAsEstimator    ServiceOrder[]    @relation("ServiceOrderEstimator")
-  serviceOrdersAsTechnician   ServiceOrder[]    @relation("ServiceOrderTechnician")
-  inspectionsAsInspector      Inspection[]      @relation("InspectionInspector")
-  inspectionIssuesResponsible InspectionIssue[] @relation("InspectionIssueResponsible")
-  vehicleDamagesAuthored      VehicleDamage[]   @relation("VehicleDamageAuthor")
-  timeEntries                 TimeEntry[]       @relation("TimeEntryEmployee")
-  auditLogs                   AuditLog[]        @relation("AuditLogActor")
-  notifications               Notification[]    @relation("NotificationRecipient")
-  trucksAssigned              Truck[]           @relation("TruckAssignedEmployee")
-  truckTrips                  TruckTrip[]       @relation("TruckTripDriver")
-  truckRefuelings             TruckRefueling[]  @relation("TruckRefuelingDriver")
+  serviceOrdersAsConsultant   ServiceOrder[]          @relation("ServiceOrderConsultant")
+  serviceOrdersAsEstimator    ServiceOrder[]          @relation("ServiceOrderEstimator")
+  serviceOrdersAsTechnician   ServiceOrder[]          @relation("ServiceOrderTechnician")
+  inspectionsAsInspector      Inspection[]            @relation("InspectionInspector")
+  inspectionIssuesResponsible InspectionIssue[]       @relation("InspectionIssueResponsible")
+  vehicleDamagesAuthored      VehicleDamage[]         @relation("VehicleDamageAuthor")
+  timeEntries                 TimeEntry[]             @relation("TimeEntryEmployee")
+  auditLogs                   AuditLog[]              @relation("AuditLogActor")
+  notifications               Notification[]          @relation("NotificationRecipient")
+  trucksAssigned              Truck[]                 @relation("TruckAssignedEmployee")
+  truckTrips                  TruckTrip[]             @relation("TruckTripDriver")
+  truckRefuelings             TruckRefueling[]        @relation("TruckRefuelingDriver")
   createdShareLinks           ServiceOrderShareLink[]
+}
+
+// "Esqueci minha senha" — só o hash do token fica salvo (o token em si vai no link do
+// e-mail). Uso único (usedAt) e validade curta (expiresAt).
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
 }
 
 // Comissão de mecânico sobre um projeto — normalmente uma por Approval (o gerador
@@ -71,9 +90,9 @@ model Commission {
   serviceOrderId   String
   serviceOrder     ServiceOrder    @relation(fields: [serviceOrderId], references: [id])
   basisType        String          @default("APPROVAL") // APPROVAL_ESTIMATE (padrão do gerador automático, base = Approval.estimatedValue) | APPROVAL_LABOR (base = Approval.laborValue, escolha manual) | ORDER_TOTAL (base = soma dos aprovados do projeto)
-  baseAmount       Float
+  baseAmount       Decimal         @db.Decimal(12, 2)
   rate             Float
-  amount           Float
+  amount           Decimal         @db.Decimal(12, 2)
   status           String          @default("PENDING") // PENDING | PAID | CANCELLED
   paidAt           DateTime?
   accountPayableId String?         @unique
@@ -111,7 +130,7 @@ model BankAccount {
   bank           String?
   agency         String?
   accountNumber  String?
-  initialBalance Float    @default(0)
+  initialBalance Decimal  @default(0) @db.Decimal(12, 2)
   active         Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -128,10 +147,10 @@ model AccountPayable {
   description       String
   category          String
   payeeName         String
-  amount            Float
+  amount            Decimal        @db.Decimal(12, 2)
   dueDate           DateTime
   paidAt            DateTime?
-  paidAmount        Float?
+  paidAmount        Decimal?       @db.Decimal(12, 2)
   status            String         @default("PENDING") // PENDING | PAID | OVERDUE | CANCELLED
   paymentMethod     String?
   bankAccountId     String?
@@ -154,6 +173,8 @@ model AccountPayable {
   updatedAt         DateTime       @updatedAt
 
   commission Commission?
+
+  @@index([status, dueDate])
 }
 
 // Conta a receber — pode ou não estar ligada a uma OS/cliente (ex: venda de balcão avulsa).
@@ -165,10 +186,10 @@ model AccountReceivable {
   client            Client?       @relation(fields: [clientId], references: [id])
   serviceOrderId    String?
   serviceOrder      ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
-  amount            Float
+  amount            Decimal       @db.Decimal(12, 2)
   dueDate           DateTime
   receivedAt        DateTime?
-  receivedAmount    Float?
+  receivedAmount    Decimal?      @db.Decimal(12, 2)
   status            String        @default("PENDING") // PENDING | RECEIVED | OVERDUE | CANCELLED
   paymentMethod     String?
   bankAccountId     String?
@@ -182,6 +203,9 @@ model AccountReceivable {
 
   invoices    Invoice[]
   counterSale CounterSale?
+
+  @@index([status, dueDate])
+  @@index([serviceOrderId])
 }
 
 // Nota fiscal (NF-e/NFS-e/NFC-e). `provider` identifica o gateway usado para emissão
@@ -210,9 +234,9 @@ model Invoice {
   recipientDocument   String?
   paymentMethod       String?
   description         String? // discriminação dos produtos/serviços
-  totalAmount         Float
-  discountAmount      Float?
-  taxAmount           Float?
+  totalAmount         Decimal            @db.Decimal(12, 2)
+  discountAmount      Decimal?           @db.Decimal(12, 2)
+  taxAmount           Decimal?           @db.Decimal(12, 2)
   issueDate           DateTime?
   cancelledAt         DateTime?
   xmlUrl              String?
@@ -242,7 +266,7 @@ model CounterSale {
   bankAccount         BankAccount?       @relation(fields: [bankAccountId], references: [id])
   accountReceivableId String?            @unique
   accountReceivable   AccountReceivable? @relation(fields: [accountReceivableId], references: [id])
-  totalAmount         Float
+  totalAmount         Decimal            @db.Decimal(12, 2)
   createdAt           DateTime           @default(now())
   cancelledAt         DateTime?
 
@@ -257,7 +281,7 @@ model CounterSaleItem {
   inventoryPartId String
   inventoryPart   InventoryPart @relation(fields: [inventoryPartId], references: [id])
   quantity        Int
-  unitPrice       Float
+  unitPrice       Decimal       @db.Decimal(12, 2)
 }
 
 // Fornecedor — origem dos pedidos de compra e, opcionalmente, fornecedor preferencial
@@ -310,7 +334,7 @@ model PurchaseOrderItem {
   inventoryPartId String
   inventoryPart   InventoryPart @relation(fields: [inventoryPartId], references: [id])
   quantity        Int
-  unitCost        Float
+  unitCost        Decimal       @db.Decimal(12, 2)
   receivedQty     Int           @default(0)
 }
 
@@ -355,6 +379,8 @@ model Appointment {
   updatedAt            DateTime      @updatedAt
 
   truckTrip TruckTrip?
+
+  @@index([startAt])
 }
 
 // Cargo administrável (Mecânico, Financeiro, Gerente...) — não hardcoded.
@@ -455,7 +481,7 @@ model InventoryPart {
   // PART (peça) | MATERIAL (consumível: tinta, lixa, fita...) — mesmo módulo de
   // estoque/compras, só filtrado por tipo nas telas (não duplica cadastro).
   kind                String    @default("PART")
-  unitCost            Float
+  unitCost            Decimal   @db.Decimal(12, 2)
   stockQty            Int       @default(0)
   // Ponto mínimo de estoque e quantidade-alvo ao repor — usados para gerar sugestões
   // automáticas de compra quando stockQty <= minStockQty.
@@ -494,6 +520,8 @@ model Vehicle {
   serviceOrders ServiceOrder[]
   quoteRequests QuoteRequest[]
   appointments  Appointment[]
+
+  @@index([ownerId])
 }
 
 model ServiceOrder {
@@ -505,13 +533,13 @@ model ServiceOrder {
   vehicle             Vehicle   @relation(fields: [vehicleId], references: [id])
   status              String    @default("RECEIVED")
   progress            Int       @default(0) // 0-100, calculado a partir do status + eventos
-  estimatedMin        Float?
-  estimatedMax        Float?
+  estimatedMin        Decimal?  @db.Decimal(12, 2)
+  estimatedMax        Decimal?  @db.Decimal(12, 2)
   scheduledAt         DateTime?
   receivedAt          DateTime  @default(now())
   completedAt         DateTime?
   deliveryDescription String?
-  deliveryExtraValue  Float?
+  deliveryExtraValue  Decimal?  @db.Decimal(12, 2)
   // "Dar baixa" — admin encerra o projeto mesmo sem confirmação do cliente. Some da
   // lista/kanban de projetos em andamento, mas o registro (e a garantia das peças,
   // independente disso) continua acessível normalmente.
@@ -537,7 +565,7 @@ model ServiceOrder {
   insuranceCompanyId  String?
   insuranceCompany    InsuranceCompany? @relation(fields: [insuranceCompanyId], references: [id])
   claimNumber         String?
-  deductibleAmount    Float?
+  deductibleAmount    Decimal?          @db.Decimal(12, 2)
   serviceType         String?
   authorizationNumber String?
 
@@ -560,6 +588,10 @@ model ServiceOrder {
   vehicleDamages     VehicleDamage[]
   timeEntries        TimeEntry[]
   shareLink          ServiceOrderShareLink?
+
+  @@index([vehicleId])
+  @@index([status, archivedAt])
+  @@index([createdAt])
 }
 
 // Link público de acompanhamento (aba do projeto → "Compartilhar") — deixa o cliente ver
@@ -597,12 +629,15 @@ model QuoteRequest {
   mechanicId         String?
   mechanic           User?         @relation("QuoteRequestMechanic", fields: [mechanicId], references: [id])
   scheduledAt        DateTime?
-  initialValue       Float?
+  initialValue       Decimal?      @db.Decimal(12, 2)
   declineReason      String?
   serviceOrderId     String?       @unique
   serviceOrder       ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
   createdAt          DateTime      @default(now())
   respondedAt        DateTime?
+
+  @@index([customerId])
+  @@index([status])
 }
 
 model TimelineEvent {
@@ -618,6 +653,8 @@ model TimelineEvent {
   createdAt      DateTime     @default(now())
 
   media Media[]
+
+  @@index([serviceOrderId])
 }
 
 model VehiclePart {
@@ -657,9 +694,9 @@ model Approval {
   title          String
   description    String
   note           String?
-  laborValue     Float?
-  partsValue     Float?
-  estimatedValue Float?
+  laborValue     Decimal?     @db.Decimal(12, 2)
+  partsValue     Decimal?     @db.Decimal(12, 2)
+  estimatedValue Decimal?     @db.Decimal(12, 2)
   status         String       @default("PENDING") // PENDING | APPROVED | REJECTED
   responseNote   String?
   stockAppliedAt DateTime?
@@ -680,6 +717,9 @@ model Approval {
   financialEntries FinancialEntry[]
   commission       Commission?
   estimateItems    EstimateItem[]
+
+  @@index([serviceOrderId])
+  @@index([partId])
 }
 
 model ProblemPartUsage {
@@ -689,10 +729,12 @@ model ProblemPartUsage {
   inventoryPartId  String
   inventoryPart    InventoryPart @relation(fields: [inventoryPartId], references: [id])
   quantity         Int
-  unitCostSnapshot Float
+  unitCostSnapshot Decimal       @db.Decimal(12, 2)
   createdAt        DateTime      @default(now())
 
   financialEntries FinancialEntry[]
+
+  @@index([approvalId])
 }
 
 model FinancialEntry {
@@ -700,7 +742,7 @@ model FinancialEntry {
   type            String // INCOME | EXPENSE
   category        String
   description     String
-  amount          Float
+  amount          Decimal           @db.Decimal(12, 2)
   serviceOrderId  String?
   serviceOrder    ServiceOrder?     @relation(fields: [serviceOrderId], references: [id])
   approvalId      String?
@@ -719,6 +761,9 @@ model FinancialEntry {
   createdBy       User?             @relation("FinancialEntryCreatedBy", fields: [createdById], references: [id])
   occurredAt      DateTime          @default(now())
   createdAt       DateTime          @default(now())
+
+  @@index([occurredAt])
+  @@index([serviceOrderId])
 }
 
 model Media {
@@ -744,7 +789,12 @@ model Media {
   // Foto de avaria pré-existente, enviada no checklist ao criar o projeto — continua
   // salva mesmo depois de o projeto ser finalizado/arquivado.
   isDamagePhoto     Boolean          @default(false)
+  // Assinatura do cliente desenhada na tela (PNG): CHECKIN (entrada do veículo, junto
+  // do checklist de avarias) | DELIVERY (retirada do veículo pronto).
+  signatureKind     String?
   createdAt         DateTime         @default(now())
+
+  @@index([serviceOrderId])
 }
 
 model ChatMessage {
@@ -756,6 +806,8 @@ model ChatMessage {
   body           String?
   attachmentUrl  String?
   createdAt      DateTime     @default(now())
+
+  @@index([serviceOrderId])
 }
 
 // ---------------------------------------------------------------------------
@@ -814,14 +866,14 @@ model Estimate {
   // DRAFT | AWAITING_APPROVAL | APPROVED | PARTIALLY_APPROVED | REJECTED |
   // SUPPLEMENT_REQUESTED | CANCELLED | CONVERTED
   validUntil         DateTime?
-  laborTotal         Float             @default(0)
-  partsTotal         Float             @default(0)
-  materialsTotal     Float             @default(0)
-  thirdPartyTotal    Float             @default(0)
-  discountAmount     Float             @default(0)
-  taxAmount          Float             @default(0)
-  deductibleAmount   Float             @default(0)
-  totalAmount        Float             @default(0)
+  laborTotal         Decimal           @default(0) @db.Decimal(12, 2)
+  partsTotal         Decimal           @default(0) @db.Decimal(12, 2)
+  materialsTotal     Decimal           @default(0) @db.Decimal(12, 2)
+  thirdPartyTotal    Decimal           @default(0) @db.Decimal(12, 2)
+  discountAmount     Decimal           @default(0) @db.Decimal(12, 2)
+  taxAmount          Decimal           @default(0) @db.Decimal(12, 2)
+  deductibleAmount   Decimal           @default(0) @db.Decimal(12, 2)
+  totalAmount        Decimal           @default(0) @db.Decimal(12, 2)
   notes              String?
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
@@ -838,8 +890,8 @@ model EstimateItem {
   description    String
   classification String    @default("PENDING") // REPAIR | REPLACE | REUSE | PENDING
   quantity       Float     @default(1)
-  unitValue      Float     @default(0)
-  totalValue     Float     @default(0)
+  unitValue      Decimal   @default(0) @db.Decimal(12, 2)
+  totalValue     Decimal   @default(0) @db.Decimal(12, 2)
   createdAt      DateTime  @default(now())
 }
 
@@ -905,8 +957,8 @@ model Service {
   name            String
   description     String?
   standardTimeMin Int?
-  hourlyRate      Float?
-  standardPrice   Float?
+  hourlyRate      Decimal? @db.Decimal(12, 2)
+  standardPrice   Decimal? @db.Decimal(12, 2)
   sector          String?
   active          Boolean  @default(true)
   createdAt       DateTime @default(now())
@@ -968,6 +1020,8 @@ model Notification {
   userId    String?
   user      User?    @relation("NotificationRecipient", fields: [userId], references: [id])
   createdAt DateTime @default(now())
+
+  @@index([read])
 }
 
 // Template de documento padronizado (autorização, recibo, termo de entrega...).
@@ -1054,8 +1108,8 @@ model TruckRefueling {
   currentKm     Int
   referenceKm   Int
   liters        Float
-  amountPaid    Float
-  pricePerLiter Float?
+  amountPaid    Decimal   @db.Decimal(12, 2)
+  pricePerLiter Decimal?  @db.Decimal(12, 3)
   kmPerLiter    Float?
   notes         String?
   createdAt     DateTime  @default(now())

@@ -1,6 +1,10 @@
-import express from "express";
+import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import path from "path";
+import { MulterError } from "multer";
+import { Prisma } from "@prisma/client";
+import { UploadTypeError } from "@/middleware/upload";
+import { HttpError } from "@/lib/http-error";
 import { authRouter } from "@/routes/auth.routes";
 import { vehiclesRouter } from "@/routes/vehicles.routes";
 import { serviceOrdersRouter } from "@/routes/service-orders.routes";
@@ -46,8 +50,16 @@ import { publicRouter } from "@/routes/public.routes";
 export const app = express();
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000" }));
+// Render/proxies na frente do Node — necessário pro rate limit enxergar o IP real do cliente.
+app.set("trust proxy", 1);
 app.use(express.json());
-app.use("/uploads", express.static(path.resolve(process.cwd(), process.env.UPLOADS_DIR || "uploads")));
+app.use(
+  "/uploads",
+  express.static(path.resolve(process.cwd(), process.env.UPLOADS_DIR || "uploads"), {
+    // Arquivo enviado nunca deve ser interpretado como outra coisa (ex.: HTML executável).
+    setHeaders: (res) => res.setHeader("X-Content-Type-Options", "nosniff"),
+  })
+);
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "box-backend" }));
 
@@ -96,3 +108,22 @@ app.use("/api/trucks", trucksRouter);
 app.use("/api/public", publicRouter);
 
 app.use((_req, res) => res.status(404).json({ error: "Rota não encontrada." }));
+
+// Tratador global — sem ele, um erro inesperado (Express 5 já encaminha rejeições de
+// handlers async pra cá) virava uma página HTML com stack trace em vez de JSON.
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof MulterError) {
+    const message = err.code === "LIMIT_FILE_SIZE" ? "Arquivo muito grande (máximo 50 MB)." : "Não foi possível processar o arquivo enviado.";
+    return res.status(400).json({ error: message });
+  }
+  if (err instanceof UploadTypeError) return res.status(400).json({ error: err.message });
+  if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+  if (err instanceof SyntaxError && "body" in err) return res.status(400).json({ error: "JSON inválido." });
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (err.code === "P2025") return res.status(404).json({ error: "Registro não encontrado." });
+    if (err.code === "P2002") return res.status(409).json({ error: "Já existe um registro com esses dados." });
+    if (err.code === "P2003") return res.status(409).json({ error: "Este registro está vinculado a outros dados e não pode ser alterado/excluído." });
+  }
+  console.error(err);
+  res.status(500).json({ error: "Erro interno no servidor. Tente novamente em instantes." });
+});

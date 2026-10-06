@@ -193,6 +193,25 @@ quoteRequestsRouter.patch(
         },
       });
 
+      // Já entra na Agenda o compromisso de receber o veículo no horário combinado — antes
+      // ficava só no scheduledAt da OS e a recepção precisava lembrar de agendar à parte.
+      // Sem mecânico/box: quem organiza a oficina atribui depois, na própria Agenda.
+      const vehicle = await tx.vehicle.findUnique({
+        where: { id: existing.vehicleId },
+        include: { owner: { include: { client: { select: { id: true } } } } },
+      });
+      await tx.appointment.create({
+        data: {
+          title: `Receber veículo — ${vehicle ? `${vehicle.brand} ${vehicle.model}${vehicle.plate ? ` (${vehicle.plate})` : ""}` : order.code}`,
+          vehicleId: existing.vehicleId,
+          clientId: vehicle?.owner.client?.id,
+          serviceOrderId: order.id,
+          type: "SERVICE",
+          startAt: scheduledDate,
+          notes: `Orçamento aceito (${order.code}). Problema relatado: ${existing.problemDescription}`,
+        },
+      });
+
       const request = await tx.quoteRequest.update({
         where: { id: existing.id },
         data: {

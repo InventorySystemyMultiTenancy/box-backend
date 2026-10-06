@@ -95,7 +95,7 @@ export async function getCapacityPanel() {
   weekStart.setHours(0, 0, 0, 0);
 
   const [employees, entries] = await Promise.all([
-    prisma.user.findMany({ where: { role: { in: ["MECHANIC", "ADMIN"] } }, select: { id: true, name: true, weeklyHours: true } }),
+    prisma.user.findMany({ where: { role: { in: ["MECHANIC", "ADMIN"] }, active: true }, select: { id: true, name: true, weeklyHours: true } }),
     prisma.timeEntry.findMany({ where: { startedAt: { gte: weekStart } }, select: { employeeId: true, sector: true, startedAt: true, endedAt: true, pausedMinutes: true } }),
   ]);
 

@@ -6,10 +6,11 @@ import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
 import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS, SERVICE_ORDER_PRIORITIES, RETIRED_SERVICE_ORDER_STATUSES } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
+import { parsePageParams, paginated } from "@/lib/pagination";
 import { upload, persistUploadedFile } from "@/middleware/upload";
 import { recordAudit } from "@/services/audit.service";
 import { createOrGetShareLink, revokeShareLink, getActiveShareLink, ShareLinkError } from "@/services/share-link.service";
-
+import { createOrderReceivables, orderAlreadyBilled } from "@/services/service-order-billing.service";
 export const serviceOrdersRouter = Router();
 
 const orderInclude = {
@@ -52,6 +53,24 @@ function hidePricesForMechanic<T extends { approvals?: any[]; estimatedMin?: num
   };
 }
 
+// Listagens (Kanban, lista de projetos, histórico, seletores) só precisam do resumo — a
+// timeline, fotos e peças completas vêm do GET /:id ao abrir o projeto. Carregar tudo de
+// todas as ordens deixava a tela cada vez mais lenta conforme o histórico crescia.
+const orderListInclude = {
+  vehicle: { include: { owner: { select: { id: true, name: true, email: true, phone: true } } } },
+  approvals: {
+    orderBy: { createdAt: "desc" as const },
+    select: { id: true, title: true, status: true, kind: true, laborValue: true, partsValue: true, estimatedValue: true, partId: true, createdAt: true },
+  },
+  consultant: { select: { id: true, name: true } },
+  estimator: { select: { id: true, name: true } },
+  technician: { select: { id: true, name: true } },
+  currentSector: true,
+  insuranceCompany: true,
+};
+
+const HISTORY_STATUSES = ["FINISHED", "READY_FOR_PICKUP"];
+
 serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const isStaff = req.user!.role === "MECHANIC" || req.user!.role === "ADMIN";
   const storeId = typeof req.query.storeId === "string" ? req.query.storeId : undefined;
@@ -59,20 +78,57 @@ serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const priority = typeof req.query.priority === "string" ? req.query.priority : undefined;
   const insuranceCompanyId = typeof req.query.insuranceCompanyId === "string" ? req.query.insuranceCompanyId : undefined;
   const includeArchived = req.query.includeArchived === "true";
-  const orders = await prisma.serviceOrder.findMany({
-    where: {
-      ...(isStaff ? {} : { vehicle: { ownerId: req.user!.id } }),
-      // Projeto com baixa dada some da lista/kanban de projetos em andamento (staff),
-      // mas segue acessível por GET /:id, histórico do cliente e busca — nunca é apagado.
-      ...(isStaff && !includeArchived ? { archivedAt: null } : {}),
-      ...(storeId ? { storeId } : {}),
-      ...(currentSectorId ? { currentSectorId } : {}),
-      ...(priority ? { priority } : {}),
-      ...(insuranceCompanyId ? { insuranceCompanyId } : {}),
-    },
-    include: orderInclude,
-    orderBy: { createdAt: "desc" },
-  });
+  // scope=history: concluídos/com baixa, paginado e com busca no servidor (aba "Concluídos").
+  const history = req.query.scope === "history";
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+
+  const where = {
+    ...(isStaff ? {} : { vehicle: { ownerId: req.user!.id } }),
+    // Projeto com baixa dada some da lista/kanban de projetos em andamento (staff),
+    // mas segue acessível por GET /:id, histórico do cliente e busca — nunca é apagado.
+    ...(history
+      ? { OR: [{ archivedAt: { not: null } }, { status: { in: HISTORY_STATUSES } }] }
+      : isStaff && !includeArchived
+        ? { archivedAt: null }
+        : {}),
+    ...(q
+      ? {
+          AND: [
+            {
+              OR: [
+                { code: { contains: q, mode: "insensitive" as const } },
+                { vehicle: { plate: { contains: q, mode: "insensitive" as const } } },
+                { vehicle: { brand: { contains: q, mode: "insensitive" as const } } },
+                { vehicle: { model: { contains: q, mode: "insensitive" as const } } },
+                { vehicle: { owner: { name: { contains: q, mode: "insensitive" as const } } } },
+              ],
+            },
+          ],
+        }
+      : {}),
+    ...(storeId ? { storeId } : {}),
+    ...(currentSectorId ? { currentSectorId } : {}),
+    ...(priority ? { priority } : {}),
+    ...(insuranceCompanyId ? { insuranceCompanyId } : {}),
+  };
+
+  if (history) {
+    const pageParams = parsePageParams(req.query as Record<string, unknown>);
+    const [items, total] = await Promise.all([
+      prisma.serviceOrder.findMany({
+        where,
+        include: orderListInclude,
+        orderBy: [{ completedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+        skip: pageParams.skip,
+        take: pageParams.take,
+      }),
+      prisma.serviceOrder.count({ where }),
+    ]);
+    const page = paginated(items.map((order) => hidePricesForMechanic(order, req.user!.role)), total, pageParams);
+    return res.json({ orders: page.items, pagination: page.pagination });
+  }
+
+  const orders = await prisma.serviceOrder.findMany({ where, include: orderListInclude, orderBy: { createdAt: "desc" } });
   res.json({ orders: orders.map((order) => hidePricesForMechanic(order, req.user!.role)) });
 });
 
@@ -137,6 +193,37 @@ serviceOrdersRouter.post(
     });
 
     const media = await prisma.media.findMany({ where: { serviceOrderId: order.id, isDamagePhoto: true }, orderBy: { createdAt: "asc" } });
+    res.status(201).json({ media });
+  }
+);
+
+// Assinatura do cliente desenhada na tela (PNG) — CHECKIN no laudo de entrada (junto das
+// fotos de avaria) ou DELIVERY na retirada (também aceita junto do /finalize). Fica salva
+// como mídia da OS, igual às fotos de avaria, mesmo depois de a OS ser arquivada.
+serviceOrdersRouter.post(
+  "/:id/signature",
+  requireAuth,
+  requireRole("MECHANIC", "ADMIN"),
+  upload.single("signature"),
+  async (req: AuthedRequest<{ id: string }>, res) => {
+    const kind = z.enum(["CHECKIN", "DELIVERY"]).safeParse(req.body.kind);
+    if (!kind.success) return res.status(400).json({ error: "Tipo de assinatura inválido." });
+    if (!req.file || !req.file.mimetype.startsWith("image/")) return res.status(400).json({ error: "Envie a assinatura como imagem." });
+
+    const order = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
+    if (!order) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+
+    const url = await persistUploadedFile(req.file);
+    const label = kind.data === "CHECKIN" ? "Assinatura do cliente — entrada do veículo" : "Assinatura do cliente — retirada do veículo";
+    const media = await prisma.media.create({
+      data: { serviceOrderId: order.id, url, type: "PHOTO", label, signatureKind: kind.data },
+    });
+    await prisma.timelineEvent.create({
+      data: { serviceOrderId: order.id, title: label, authorId: req.user!.id },
+    });
+
+    emitToOrder(order.id, "media:new", { media });
+    emitToOrder(order.id, "timeline:new", {});
     res.status(201).json({ media });
   }
 );
@@ -321,22 +408,37 @@ serviceOrdersRouter.patch(
   }
 );
 
+// multipart manda booleano como texto — z.coerce.boolean() trataria "false" como true.
+const formBoolean = z.enum(["true", "false"]).transform((v) => v === "true");
+
 const finalizeSchema = z.object({
   description: z.string().optional(),
   extraValue: z.coerce.number().min(0).optional(),
+  // Cobrança gerada na entrega (Financeiro > Contas a receber).
+  paymentMethod: z.string().optional(),
+  installments: z.coerce.number().int().min(1).max(24).optional(),
+  firstDueDate: z.string().optional(),
+  receivedNow: formBoolean.optional(),
+  bankAccountId: z.string().optional(),
 });
 
 // Admin finaliza e entrega o veículo: além de liberar a retirada, pode registrar uma
-// foto extra do veículo pronto, uma descrição e um valor extra (ex.: lavagem, taxa de
-// entrega) somado por fora dos preços já aprovados dos problemas/peças.
+// foto extra do veículo pronto, a assinatura do cliente, uma descrição e um valor extra
+// (ex.: lavagem, taxa de entrega) somado por fora dos preços dos problemas/peças. A
+// cobrança vira conta a receber (à vista/parcelada, já recebida ou não) — antes era um
+// lançamento de receita solto, que somava em dobro com a conta a receber da mesma OS.
 serviceOrdersRouter.patch(
   "/:id/finalize",
   requireAuth,
   requireRole("ADMIN"),
-  upload.single("photo"),
+  upload.fields([
+    { name: "photo", maxCount: 1 },
+    { name: "signature", maxCount: 1 },
+  ]),
   async (req: AuthedRequest<{ id: string }>, res) => {
     const parsed = finalizeSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+    const files = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
 
     // Só exige que o próprio trabalho da oficina esteja concluído (peças sem status
     // CRITICAL/IN_PROGRESS/WARNING) — não trava a entrega esperando resposta do
@@ -349,8 +451,9 @@ serviceOrdersRouter.patch(
       return res.status(409).json({ error: "Ainda há problemas não resolvidos nesta ordem de serviço." });
     }
 
-    const photoUrl = req.file ? await persistUploadedFile(req.file) : undefined;
-    const { description, extraValue } = parsed.data;
+    const photoUrl = files.photo?.[0] ? await persistUploadedFile(files.photo[0]) : undefined;
+    const signatureUrl = files.signature?.[0] ? await persistUploadedFile(files.signature[0]) : undefined;
+    const { description, extraValue, ...payment } = parsed.data;
 
     const order = await prisma.$transaction(async (tx) => {
       const order = await tx.serviceOrder.update({
@@ -362,40 +465,19 @@ serviceOrdersRouter.patch(
           deliveryDescription: description,
           deliveryExtraValue: extraValue,
         },
+        include: { vehicle: { include: { owner: { include: { client: { select: { id: true } } } } } } },
       });
 
-      const existingIncome = await tx.financialEntry.findFirst({
-        where: { serviceOrderId: order.id, type: "INCOME", category: "PROJETO" },
-      });
-      if (!existingIncome) {
-        // Receita da oficina = trabalho de fato concluído (peça com status DONE), não
-        // só o que o cliente aprovou formalmente — mão de obra e peças de um reparo
-        // finalizado (inclusive sem resposta do cliente) entram como lucro da Reblind
-        // igual a qualquer outro, já que o veículo só chega à entrega com o serviço feito.
-        const approvals = await tx.approval.findMany({
-          where: { serviceOrderId: order.id, part: { status: "DONE" } },
-        });
-        const total = approvals.reduce((sum, approval) => sum + (approval.estimatedValue ?? 0), 0) || order.estimatedMin || 0;
-        await tx.financialEntry.create({
-          data: {
-            type: "INCOME",
-            category: "PROJETO",
-            description: `Entrada do projeto ${order.code}`,
-            amount: total,
-            serviceOrderId: order.id,
-          },
-        });
+      // Receita = trabalho de fato concluído (peça com status DONE), aprovado ou não pelo
+      // cliente (exceto o reprovado), + valor extra. Finalizar de novo uma OS já cobrada não
+      // gera outra cobrança (ex.: corrigir a descrição da entrega).
+      if (!(await orderAlreadyBilled(tx, order.id))) {
+        await createOrderReceivables(tx, order, extraValue ?? 0, payment);
       }
 
-      if (extraValue && extraValue > 0) {
-        await tx.financialEntry.create({
-          data: {
-            type: "INCOME",
-            category: "ENTREGA_EXTRA",
-            description: `Valor extra na entrega — ${order.code}`,
-            amount: extraValue,
-            serviceOrderId: order.id,
-          },
+      if (signatureUrl) {
+        await tx.media.create({
+          data: { serviceOrderId: order.id, url: signatureUrl, type: "PHOTO", label: "Assinatura do cliente — retirada do veículo", signatureKind: "DELIVERY" },
         });
       }
 
@@ -473,17 +555,26 @@ serviceOrdersRouter.delete("/:id", requireAuth, requireRole("ADMIN"), async (req
     before: existing,
   });
 
-  await prisma.$transaction([
-    prisma.media.deleteMany({ where: { serviceOrderId: id } }),
-    prisma.chatMessage.deleteMany({ where: { serviceOrderId: id } }),
-    prisma.approval.deleteMany({ where: { serviceOrderId: id } }),
-    prisma.vehiclePart.deleteMany({ where: { serviceOrderId: id } }),
-    prisma.estimate.deleteMany({ where: { serviceOrderId: id } }),
-    prisma.inspection.deleteMany({ where: { serviceOrderId: id } }),
-    prisma.vehicleDamage.deleteMany({ where: { serviceOrderId: id } }),
-    prisma.timelineEvent.deleteMany({ where: { serviceOrderId: id } }),
-    prisma.serviceOrder.delete({ where: { id } }),
-  ]);
+  await prisma.$transaction(async (tx) => {
+    // Registros que existem por conta própria só perdem o vínculo com a OS (agenda pode
+    // estar ligada a uma pilotagem de caminhão; apontamento de horas é do funcionário;
+    // a solicitação de orçamento do cliente continua no histórico dele).
+    await tx.appointment.updateMany({ where: { serviceOrderId: id }, data: { serviceOrderId: null } });
+    await tx.timeEntry.updateMany({ where: { serviceOrderId: id }, data: { serviceOrderId: null } });
+    await tx.quoteRequest.updateMany({ where: { serviceOrderId: id }, data: { serviceOrderId: null } });
+
+    // Ordem importa: itens de orçamento referenciam aprovações; mídia referencia
+    // problema/evento/vistoria/avaria; aprovações referenciam o componente.
+    await tx.estimate.deleteMany({ where: { serviceOrderId: id } });
+    await tx.media.deleteMany({ where: { serviceOrderId: id } });
+    await tx.chatMessage.deleteMany({ where: { serviceOrderId: id } });
+    await tx.approval.deleteMany({ where: { serviceOrderId: id } });
+    await tx.vehiclePart.deleteMany({ where: { serviceOrderId: id } });
+    await tx.inspection.deleteMany({ where: { serviceOrderId: id } });
+    await tx.vehicleDamage.deleteMany({ where: { serviceOrderId: id } });
+    await tx.timelineEvent.deleteMany({ where: { serviceOrderId: id } });
+    await tx.serviceOrder.delete({ where: { id } });
+  });
 
   res.json({ ok: true });
 });

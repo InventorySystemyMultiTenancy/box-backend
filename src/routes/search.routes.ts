@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { prisma } from "@/lib/prisma";
-import { requireAuth, requireRole } from "@/middleware/auth";
+import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { getSearchAssistance, SearchAssistantError, SearchAssistTurn } from "@/services/search-assistant.service";
 import { transcribeAudio, SpeechToTextError } from "@/services/speech-to-text.service";
 import { upload } from "@/middleware/upload";
@@ -9,7 +9,7 @@ import fs from "fs";
 export const searchRouter = Router();
 
 // Busca global — cobre praticamente todo cadastro do sistema (OS, orçamentos,
-// usuários/clientes, veículos, fornecedores, peças de estoque, caminhões e
+// usuários/clientes, veículos, fornecedores, peças, caminhões e
 // seguradoras), cada um com "contains" case-insensitive nos campos relevantes.
 searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req, res) => {
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -90,6 +90,31 @@ searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req,
       orderBy: { legalName: "asc" },
     }),
   ]);
+
+  // Mecânico não vê valores em nenhuma outra tela (ver hidePricesForMechanic e
+  // GET /inventory-parts) — a busca segue a mesma regra.
+  if ((req as AuthedRequest).user!.role === "MECHANIC") {
+    return res.json({
+      orders: orders.map((o) => ({ ...o, estimatedMin: null, estimatedMax: null, deliveryExtraValue: null, deductibleAmount: null })),
+      estimates: estimates.map((e) => ({
+        ...e,
+        laborTotal: null,
+        partsTotal: null,
+        materialsTotal: null,
+        thirdPartyTotal: null,
+        discountAmount: null,
+        taxAmount: null,
+        deductibleAmount: null,
+        totalAmount: null,
+      })),
+      users,
+      vehicles,
+      suppliers,
+      parts: parts.map((p) => ({ ...p, unitCost: null })),
+      trucks,
+      insuranceCompanies,
+    });
+  }
 
   res.json({ orders, estimates, users, vehicles, suppliers, parts, trucks, insuranceCompanies });
 });

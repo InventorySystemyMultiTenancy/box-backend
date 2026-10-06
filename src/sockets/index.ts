@@ -1,6 +1,6 @@
 import { Server as HttpServer } from "http";
 import { Server as SocketServer } from "socket.io";
-import { verifyToken } from "@/lib/jwt";
+import { resolveTokenUser } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { resolveShareLinkOrderId } from "@/services/share-link.service";
 
@@ -18,8 +18,9 @@ export function initSockets(httpServer: HttpServer) {
     // só os eventos que dizem respeito ao carro dele.
     socket.on("join-order", async ({ orderId, token }: { orderId: string; token: string }) => {
       try {
-        const payload = verifyToken(token);
-        const allowed = await canAccessServiceOrder(payload.sub, payload.role, orderId);
+        const user = await resolveTokenUser(token);
+        if (!user) return socket.emit("error", { message: "Conta desativada." });
+        const allowed = await canAccessServiceOrder(user.id, user.role, orderId);
         if (!allowed) return socket.emit("error", { message: "Sem acesso a esta ordem de serviço." });
         socket.join(roomFor(orderId));
       } catch {
@@ -41,10 +42,11 @@ export function initSockets(httpServer: HttpServer) {
 
     // Sala pessoal do usuário — usada para notificar sobre a solicitação de
     // orçamento antes de existir uma ordem de serviço (e, portanto, uma sala order:<id>).
-    socket.on("join-user", ({ token }: { token: string }) => {
+    socket.on("join-user", async ({ token }: { token: string }) => {
       try {
-        const payload = verifyToken(token);
-        socket.join(userRoomFor(payload.sub));
+        const user = await resolveTokenUser(token);
+        if (!user) return socket.emit("error", { message: "Conta desativada." });
+        socket.join(userRoomFor(user.id));
       } catch {
         socket.emit("error", { message: "Token inválido." });
       }
@@ -52,10 +54,10 @@ export function initSockets(httpServer: HttpServer) {
 
     // Sala da equipe — mecânico/admin entram aqui para ver, em tempo real,
     // novas solicitações de orçamento e atualizações de qualquer ordem em andamento.
-    socket.on("join-staff", ({ token }: { token: string }) => {
+    socket.on("join-staff", async ({ token }: { token: string }) => {
       try {
-        const payload = verifyToken(token);
-        if (payload.role !== "MECHANIC" && payload.role !== "ADMIN") {
+        const user = await resolveTokenUser(token);
+        if (!user || (user.role !== "MECHANIC" && user.role !== "ADMIN")) {
           return socket.emit("error", { message: "Sem permissão para esta sala." });
         }
         socket.join(STAFF_ROOM);

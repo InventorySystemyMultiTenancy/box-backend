@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { requirePermission } from "@/middleware/permissions";
 import { getCashFlow, getDRE } from "@/services/cash-flow.service";
+import { dropDuplicatedOrderIncome } from "@/services/service-order-billing.service";
 
 export const financeRouter = Router();
 
@@ -37,11 +38,13 @@ financeRouter.get("/summary", requireAuth, requireRole("ADMIN"), async (req, res
   const to = typeof req.query.to === "string" ? req.query.to : undefined;
 
   const [entries, partUsages, paidPayables, receivedReceivables] = await Promise.all([
-    prisma.financialEntry.findMany({
-      where: periodWhere("occurredAt", from, to),
-      include: { createdBy: { select: { id: true, name: true } } },
-      orderBy: { occurredAt: "desc" },
-    }),
+    prisma.financialEntry
+      .findMany({
+        where: periodWhere("occurredAt", from, to),
+        include: { createdBy: { select: { id: true, name: true } } },
+        orderBy: { occurredAt: "desc" },
+      })
+      .then(dropDuplicatedOrderIncome),
     // Custo real de peças gastas em projetos — direto do uso registrado (não depende
     // mais do fluxo (hoje raro) de aprovação do cliente que gerava um FinancialEntry
     // "PEÇA" à parte; problemas reprovados não contam, o resto sim.
@@ -49,7 +52,7 @@ financeRouter.get("/summary", requireAuth, requireRole("ADMIN"), async (req, res
       where: { approval: { status: { not: "REJECTED" } }, ...periodWhere("createdAt", from, to) },
       select: { quantity: true, unitCostSnapshot: true, createdAt: true },
     }),
-    // Toda conta a pagar já paga é saída de caixa: compra de peça para estoque, boleto
+    // Toda conta a pagar já paga é saída de caixa: compra de peça, boleto
     // de nota fiscal, comissão paga, despesa fixa lançada em contas a pagar, etc.
     prisma.accountPayable.findMany({
       where: { status: "PAID", ...periodWhere("paidAt", from, to) },

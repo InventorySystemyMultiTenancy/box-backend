@@ -1,8 +1,5 @@
-import { prisma } from "@/lib/prisma";
+import { nextSequenceCode } from "@/lib/order-code";
 
-export async function nextCounterSaleCode() {
-  const year = new Date().getFullYear();
-  const count = await prisma.counterSale.count();
-  const seq = String(count + 1).padStart(5, "0");
-  return `PDV-${year}-${seq}`;
+export function nextCounterSaleCode() {
+  return nextSequenceCode("CounterSale_code_seq", "PDV");
 }

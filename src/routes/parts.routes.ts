@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { prisma, AppTx } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
 import { upload, guessMediaType, persistUploadedFile } from "@/middleware/upload";
 import { PART_KEYS, PART_STATUSES, STATUS_PROGRESS } from "@/lib/constants";
-
+import { HttpError } from "@/lib/http-error";
+import { roundMoney } from "@/services/finance-rules";
 export const partsRouter = Router({ mergeParams: true });
 
 partsRouter.get("/", requireAuth, async (req: AuthedRequest<{ orderId: string }>, res) => {
@@ -64,33 +65,44 @@ const usageSchema = z.array(z.object({
   quantity: z.number().int().min(1),
 }));
 
-async function replacePartUsages(
-  approvalId: string,
-  rawUsages: string | undefined,
-  // Prisma transaction client.
-  tx: any
-) {
-  await tx.problemPartUsage.deleteMany({ where: { approvalId } });
-  if (!rawUsages) return 0;
+// Lista de peças chega como JSON dentro do multipart/form-data.
+function parseUsages(raw: string | undefined): z.infer<typeof usageSchema> {
+  if (!raw) return [];
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    throw new HttpError(400, "Lista de peças inválida.");
+  }
+  const parsed = usageSchema.safeParse(json);
+  if (!parsed.success) throw new HttpError(400, "Lista de peças inválida.");
+  return parsed.data;
+}
 
-  const parsed = usageSchema.safeParse(JSON.parse(rawUsages));
-  if (!parsed.success) throw new Error("PART_USAGE_INVALID");
+/**
+ * Troca as peças de um problema pela lista nova e devolve o valor total delas (preço do
+ * cadastro × quantidade). Peça é só catálogo com preço — não há estoque a movimentar.
+ */
+async function replacePartUsages(approval: { id: string }, usages: z.infer<typeof usageSchema>, tx: AppTx) {
+  await tx.problemPartUsage.deleteMany({ where: { approvalId: approval.id } });
 
   let partsValue = 0;
-  for (const usage of parsed.data) {
+  for (const usage of usages) {
     const inventoryPart = await tx.inventoryPart.findUnique({ where: { id: usage.inventoryPartId } });
-    if (!inventoryPart || !inventoryPart.active) throw new Error("PART_NOT_FOUND");
-    partsValue += inventoryPart.unitCost * usage.quantity;
+    if (!inventoryPart || !inventoryPart.active) throw new HttpError(404, "Peça não encontrada ou inativa no cadastro.");
+    const unitCost = Number(inventoryPart.unitCost);
+    partsValue += unitCost * usage.quantity;
     await tx.problemPartUsage.create({
       data: {
-        approvalId,
+        approvalId: approval.id,
         inventoryPartId: inventoryPart.id,
         quantity: usage.quantity,
-        unitCostSnapshot: inventoryPart.unitCost,
+        unitCostSnapshot: unitCost,
       },
     });
   }
-  return partsValue;
+
+  return roundMoney(partsValue);
 }
 
 const priceProblemSchema = z.object({
@@ -135,21 +147,7 @@ partsRouter.patch(
         });
       }
 
-      await tx.problemPartUsage.deleteMany({ where: { approvalId: existing.id } });
-      let partsValue = 0;
-      for (const usage of parsed.data.partUsages) {
-        const inventoryPart = await tx.inventoryPart.findUnique({ where: { id: usage.inventoryPartId } });
-        if (!inventoryPart || !inventoryPart.active) throw new Error("PART_NOT_FOUND");
-        partsValue += inventoryPart.unitCost * usage.quantity;
-        await tx.problemPartUsage.create({
-          data: {
-            approvalId: existing.id,
-            inventoryPartId: inventoryPart.id,
-            quantity: usage.quantity,
-            unitCostSnapshot: inventoryPart.unitCost,
-          },
-        });
-      }
+      const partsValue = await replacePartUsages(existing, parsed.data.partUsages, tx);
 
       const description = parsed.data.description ?? existing.description;
       const approval = await tx.approval.update({
@@ -210,10 +208,10 @@ partsRouter.post(
   async (req: AuthedRequest<{ orderId: string }>, res) => {
     const orderId = req.params.orderId;
     const allowed = await canAccessServiceOrder(req.user!.id, req.user!.role, orderId);
-    if (!allowed) return res.status(403).json({ error: "Sem acesso a esta ordem de serviÃ§o." });
+    if (!allowed) return res.status(403).json({ error: "Sem acesso a esta ordem de serviço." });
 
     const parsed = problemSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Dados invÃ¡lidos.", details: parsed.error.flatten() });
+    if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
     const files = Array.isArray(req.files) ? req.files : [];
     const { key, name, description, wearLevel } = parsed.data;
@@ -261,7 +259,7 @@ partsRouter.post(
       });
 
       if (isAdmin && parsed.data.partUsages) {
-        const partsValue = await replacePartUsages(approval.id, parsed.data.partUsages, tx);
+        const partsValue = await replacePartUsages(approval, parseUsages(parsed.data.partUsages), tx);
         await tx.approval.update({
           where: { id: approval.id },
           data: {
@@ -365,28 +363,25 @@ partsRouter.post(
     );
 
     const result = await prisma.$transaction(async (tx) => {
-      if (parsed.data.partUsages) {
-        const usages = usageSchema.safeParse(JSON.parse(parsed.data.partUsages));
-        if (!usages.success) throw new Error("PART_USAGE_INVALID");
-        for (const usage of usages.data) {
-          const inventoryPart = await tx.inventoryPart.findUnique({ where: { id: usage.inventoryPartId } });
-          if (!inventoryPart || !inventoryPart.active) throw new Error("PART_NOT_FOUND");
-          await tx.problemPartUsage.create({
-            data: {
-              approvalId: existing.id,
-              inventoryPartId: inventoryPart.id,
-              quantity: usage.quantity,
-              unitCostSnapshot: inventoryPart.unitCost,
-            },
-          });
-        }
+      const added = parseUsages(parsed.data.partUsages);
+      for (const usage of added) {
+        const inventoryPart = await tx.inventoryPart.findUnique({ where: { id: usage.inventoryPartId } });
+        if (!inventoryPart || !inventoryPart.active) throw new HttpError(404, "Peça não encontrada ou inativa no cadastro.");
+        await tx.problemPartUsage.create({
+          data: {
+            approvalId: existing.id,
+            inventoryPartId: inventoryPart.id,
+            quantity: usage.quantity,
+            unitCostSnapshot: inventoryPart.unitCost,
+          },
+        });
       }
 
       const allUsages = await tx.problemPartUsage.findMany({
         where: { approvalId: existing.id },
         include: { inventoryPart: true },
       });
-      const partsValue = allUsages.reduce((sum, usage) => sum + usage.unitCostSnapshot * usage.quantity, 0);
+      const partsValue = roundMoney(allUsages.reduce((sum, usage) => sum + Number(usage.unitCostSnapshot) * usage.quantity, 0));
 
       const approval = await tx.approval.update({
         where: { id: existing.id },
@@ -490,13 +485,13 @@ partsRouter.post(
       return res.status(404).json({ error: "Componente não encontrado nesta ordem de serviço." });
     }
 
-    const [part, event] = await prisma.$transaction([
-      prisma.vehiclePart.update({
+    const { part, event } = await prisma.$transaction(async (tx) => {
+      const part = await tx.vehiclePart.update({
         where: { id: partId },
         data: { status: "DONE", responsibleId: req.user!.id },
         include: { media: true, responsible: { select: { name: true } } },
-      }),
-      prisma.timelineEvent.create({
+      });
+      const event = await tx.timelineEvent.create({
         data: {
           serviceOrderId: orderId,
           title: `Problema resolvido: ${existing.name}`,
@@ -504,8 +499,9 @@ partsRouter.post(
           authorId: req.user!.id,
         },
         include: { media: true, author: { select: { name: true } } },
-      }),
-    ]);
+      });
+      return { part, event };
+    });
 
     emitToOrder(orderId, "part:update", { part });
     emitToOrder(orderId, "timeline:new", { event });
