@@ -40,9 +40,16 @@ invoicesRouter.post(
 );
 
 const createSchema = z.object({
-  type: z.enum(["NFE", "NFSE", "NFCE"]),
+  // O formulário não pergunta mais o tipo — assume NF-e se não vier (a leitura por IA ainda preenche).
+  type: z.enum(["NFE", "NFSE", "NFCE"]).optional(),
   totalAmount: z.number().positive(),
-  description: z.string().min(1),
+  description: z.string().optional(),
+  // Nota de despesa: gera contas a pagar com esta classificação e banco (opcional).
+  isExpense: z.boolean().optional(),
+  expenseGroup: z.string().optional(),
+  expenseDescription: z.string().optional(),
+  expenseSector: z.string().optional(),
+  bankAccountId: z.string().optional(),
   serviceOrderId: z.string().optional(),
   clientId: z.string().optional(),
   accountReceivableId: z.string().optional(),
@@ -69,12 +76,12 @@ invoicesRouter.get("/", requireAuth, requirePermission("invoices", "view"), asyn
   res.json(result);
 });
 
-invoicesRouter.post("/", requireAuth, requirePermission("invoices", "manage"), async (req, res) => {
+invoicesRouter.post("/", requireAuth, requirePermission("invoices", "manage"), async (req: AuthedRequest, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
   try {
-    const invoice = await createInvoiceDraft(parsed.data);
+    const invoice = await createInvoiceDraft({ ...parsed.data, createdById: req.user!.id });
     res.status(201).json({ invoice });
   } catch (err) {
     if (err instanceof InvoiceError) return res.status(err.status).json({ error: err.message });

@@ -100,6 +100,13 @@ que têm o lançamento "PROJETO"/"ENTREGA_EXTRA" **e** conta a receber contam um
 `src/services/finance-rules.ts`). Valores em dinheiro são `NUMERIC(12,2)` no banco; a extensão em
 `src/lib/prisma.ts` os entrega como `number` ao código.
 
+**Contas a pagar / despesas:** cada conta tem categoria (natureza da operação), grupo, descrição
+da despesa e setor de origem, além de nº da nota, emissão, duplicata, empresa e quem lançou.
+`POST /api/finance/payables` aceita as duplicatas digitadas (`duplicates: [{ dueDate, amount, ... }]`)
+ou o parcelamento automático antigo. Toda categoria/grupo/descrição/setor usado fica salvo em
+`ExpenseClassification` e é listado em `GET /api/finance/payables/classifications`. Nota fiscal de
+despesa (`isExpense`) gera as contas a pagar já classificadas e com o banco associado.
+
 **Peças (sem estoque):** `InventoryPart` é só um catálogo de peças com preço (`unitCost`), usado nos
 projetos e no PDV. Não há controle de quantidade: nada é baixado ao usar/vender, receber um pedido de
 compra só registra o que chegou, e não existem mais alerta de estoque baixo nem sugestão de reposição.

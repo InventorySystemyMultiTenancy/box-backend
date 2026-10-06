@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { requirePermission } from "@/middleware/permissions";
-import { getCashFlow, getDRE } from "@/services/cash-flow.service";
+import { getCashFlow, getDRE, endOfPeriod } from "@/services/cash-flow.service";
 import { dropDuplicatedOrderIncome } from "@/services/service-order-billing.service";
 
 export const financeRouter = Router();
@@ -30,7 +30,7 @@ const PART_COST_CATEGORY = "PEÇA";
 
 function periodWhere(field: string, from?: string, to?: string) {
   if (!from && !to) return {};
-  return { [field]: { ...(from ? { gte: new Date(from) } : {}), ...(to ? { lte: new Date(to) } : {}) } };
+  return { [field]: { ...(from ? { gte: new Date(from) } : {}), ...(to ? { lte: endOfPeriod(to) } : {}) } };
 }
 
 financeRouter.get("/summary", requireAuth, requireRole("ADMIN"), async (req, res) => {

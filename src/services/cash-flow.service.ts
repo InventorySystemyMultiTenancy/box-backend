@@ -17,7 +17,13 @@ const PARTS_COST_LABEL = "Peças em projetos";
 
 function periodWhere(field: string, { from, to }: PeriodQuery) {
   if (!from && !to) return {};
-  return { [field]: { ...(from ? { gte: new Date(from) } : {}), ...(to ? { lte: new Date(to) } : {}) } };
+  return { [field]: { ...(from ? { gte: new Date(from) } : {}), ...(to ? { lte: endOfPeriod(to) } : {}) } };
+}
+
+// "até 2026-10-06" (só a data, como vem dos filtros de período) inclui o dia inteiro —
+// antes virava 06/10 00:00 e deixava de fora tudo que foi pago/recebido no último dia.
+export function endOfPeriod(to: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(to) ? new Date(`${to}T23:59:59.999`) : new Date(to);
 }
 
 // Mesmo custo real de peças usado no Resumo (/finance/summary) — problemas

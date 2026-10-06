@@ -61,6 +61,7 @@ model User {
   truckTrips                  TruckTrip[]             @relation("TruckTripDriver")
   truckRefuelings             TruckRefueling[]        @relation("TruckRefuelingDriver")
   createdShareLinks           ServiceOrderShareLink[]
+  payablesCreated             AccountPayable[]        @relation("AccountPayableCreatedBy")
 }
 
 // "Esqueci minha senha" — só o hash do token fica salvo (o token em si vai no link do
@@ -120,6 +121,7 @@ model Store {
   purchaseOrders PurchaseOrder[]
   counterSales   CounterSale[]
   sectors        Sector[]
+  payables       AccountPayable[]
 }
 
 // Conta bancária/caixa da oficina — origem/destino de contas a pagar e a receber,
@@ -138,6 +140,7 @@ model BankAccount {
   payables     AccountPayable[]
   receivables  AccountReceivable[]
   counterSales CounterSale[]
+  invoices     Invoice[]
 }
 
 // Conta a pagar (fornecedor, boleto, despesa fixa...). Parcelas de uma mesma
@@ -169,12 +172,46 @@ model AccountPayable {
   installmentTotal  Int?
   groupId           String?
   notes             String?
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
+
+  // Classificação da despesa (formulário "Cadastrar contas a pagar"): `category` acima é a
+  // categoria/natureza da operação; aqui ficam grupo (ex: FOLHA DE PAGAMENTO), descrição
+  // (ex: ASSISTÊNCIA MÉDICA) e o setor de origem (ex: Administração). Os valores usados
+  // ficam salvos em ExpenseClassification para reaparecer como sugestão.
+  expenseGroup       String?
+  expenseDescription String?
+  expenseSector      String?
+  // Dados do documento: nº da nota fiscal, data de emissão e nº da duplicata/boleto.
+  invoiceNumber      String?
+  issueDate          DateTime?
+  documentNumber     String?
+  // Empresa/loja (opcional — só aparece quando há lojas cadastradas).
+  storeId            String?
+  store              Store?    @relation(fields: [storeId], references: [id])
+  // "Responsável pelo último lançamento".
+  createdById        String?
+  createdBy          User?     @relation("AccountPayableCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   commission Commission?
 
   @@index([status, dueDate])
+  @@index([expenseSector])
+}
+
+// Cadastro das classificações de despesa já usadas — ao criar uma categoria/grupo/descrição/
+// setor numa conta a pagar ou nota fiscal ele fica salvo aqui para as próximas.
+// kind: CATEGORY (natureza da operação) | GROUP | DESCRIPTION (filha de um grupo, em
+// parentName) | SECTOR. parentName é "" quando não se aplica (unique não trata NULL como igual).
+model ExpenseClassification {
+  id         String   @id @default(cuid())
+  kind       String
+  name       String
+  parentName String   @default("")
+  createdAt  DateTime @default(now())
+
+  @@unique([kind, parentName, name])
 }
 
 // Conta a receber — pode ou não estar ligada a uma OS/cliente (ex: venda de balcão avulsa).
@@ -233,7 +270,14 @@ model Invoice {
   recipientName       String?
   recipientDocument   String?
   paymentMethod       String?
-  description         String? // discriminação dos produtos/serviços
+  description         String? // observação / discriminação (opcional)
+  // Nota de despesa (gera contas a pagar): classificação repassada às contas geradas e
+  // banco associado (opcional).
+  expenseGroup        String?
+  expenseDescription  String?
+  expenseSector       String?
+  bankAccountId       String?
+  bankAccount         BankAccount?       @relation(fields: [bankAccountId], references: [id])
   totalAmount         Decimal            @db.Decimal(12, 2)
   discountAmount      Decimal?           @db.Decimal(12, 2)
   taxAmount           Decimal?           @db.Decimal(12, 2)

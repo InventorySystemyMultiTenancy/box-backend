@@ -3,6 +3,7 @@ import { parsePageParams, paginated } from "@/lib/pagination";
 import { NFeProvider } from "@/services/fiscal/nfe-provider";
 import { MockNFeProvider } from "@/services/fiscal/mock-provider";
 import { createAccountsPayable } from "@/services/accounts-payable.service";
+import { normalizeClassification, rememberExpenseClassification } from "@/services/expense-classifications.service";
 
 export class InvoiceError extends Error {
   constructor(message: string, public status: number) {
@@ -11,9 +12,16 @@ export class InvoiceError extends Error {
 }
 
 export interface InvoiceInput {
-  type: "NFE" | "NFSE" | "NFCE";
+  type?: "NFE" | "NFSE" | "NFCE";
   totalAmount: number;
-  description: string;
+  description?: string;
+  // Nota de despesa (conta a pagar): gera as parcelas já classificadas.
+  isExpense?: boolean;
+  expenseGroup?: string;
+  expenseDescription?: string;
+  expenseSector?: string;
+  bankAccountId?: string;
+  createdById?: string;
   serviceOrderId?: string;
   clientId?: string;
   accountReceivableId?: string;
@@ -108,54 +116,80 @@ export async function listInvoices(query: Record<string, unknown>) {
 
 // Se `number` vier preenchido, a nota já existe fisicamente (digitada ou lida de uma
 // foto) — nasce ISSUED. Caso contrário, nasce DRAFT para ser emitida depois via /issue.
-// Quando a forma de pagamento é "boleto", também gera as parcelas como contas a
-// pagar (uma por mês, a partir de dueDate) já ligadas a esta nota.
+// Nota de despesa (isExpense) ou paga por boleto também gera as parcelas como contas a
+// pagar (uma por mês, a partir de dueDate), ligadas a esta nota e com a mesma
+// classificação (categoria = natureza da operação, grupo, descrição, setor) e banco.
 export async function createInvoiceDraft(input: InvoiceInput) {
-  const boleto = isBoleto(input.paymentMethod);
-  if (boleto && !input.dueDate) {
-    throw new InvoiceError("Informe a data de vencimento do primeiro boleto.", 400);
+  const generatesPayables = Boolean(input.isExpense) || isBoleto(input.paymentMethod);
+  if (generatesPayables && !input.dueDate) {
+    throw new InvoiceError("Informe a data de vencimento da primeira parcela.", 400);
   }
-
-  const isExisting = Boolean(input.number);
-  const invoice = await prisma.invoice.create({
-    data: {
-      type: input.type,
-      status: isExisting ? "ISSUED" : "DRAFT",
-      totalAmount: input.totalAmount,
-      description: input.description,
-      serviceOrderId: input.serviceOrderId,
-      clientId: input.clientId,
-      accountReceivableId: input.accountReceivableId,
-      number: input.number,
-      series: input.series,
-      accessKey: input.accessKey,
-      operationNature: input.operationNature,
-      issuerName: input.issuerName,
-      issuerDocument: input.issuerDocument,
-      recipientName: input.recipientName,
-      recipientDocument: input.recipientDocument,
-      paymentMethod: input.paymentMethod,
-      discountAmount: input.discountAmount,
-      taxAmount: input.taxAmount,
-      issueDate: isExisting ? new Date(input.issueDate ?? Date.now()) : undefined,
-      provider: isExisting ? "MANUAL" : provider.name,
-    },
+  const classification = normalizeClassification({
+    category: input.operationNature,
+    group: input.expenseGroup,
+    description: input.expenseDescription,
+    sector: input.expenseSector,
   });
 
-  if (boleto && input.dueDate) {
-    await createAccountsPayable({
-      description: input.description || `Nota fiscal ${input.number ?? invoice.id}`,
-      category: "FORNECEDOR",
-      payeeName: input.issuerName || input.description || "Fornecedor",
-      amount: input.totalAmount,
-      dueDate: input.dueDate,
-      paymentMethod: input.paymentMethod,
-      installments: input.installments,
-      invoiceId: invoice.id,
+  const isExisting = Boolean(input.number);
+  const invoiceId = await prisma.$transaction(async (tx) => {
+    const invoice = await tx.invoice.create({
+      data: {
+        type: input.type ?? "NFE",
+        status: isExisting ? "ISSUED" : "DRAFT",
+        totalAmount: input.totalAmount,
+        description: input.description?.trim() || undefined,
+        expenseGroup: classification.group,
+        expenseDescription: classification.description,
+        expenseSector: classification.sector,
+        bankAccountId: input.bankAccountId || undefined,
+        serviceOrderId: input.serviceOrderId,
+        clientId: input.clientId,
+        accountReceivableId: input.accountReceivableId,
+        number: input.number,
+        series: input.series,
+        accessKey: input.accessKey,
+        operationNature: classification.category,
+        issuerName: input.issuerName,
+        issuerDocument: input.issuerDocument,
+        recipientName: input.recipientName,
+        recipientDocument: input.recipientDocument,
+        paymentMethod: input.paymentMethod,
+        discountAmount: input.discountAmount,
+        taxAmount: input.taxAmount,
+        issueDate: isExisting ? new Date(input.issueDate ?? Date.now()) : undefined,
+        provider: isExisting ? "MANUAL" : provider.name,
+      },
     });
-  }
 
-  return prisma.invoice.findUnique({ where: { id: invoice.id }, include: { payables: { orderBy: { dueDate: "asc" } } } });
+    if (generatesPayables && input.dueDate) {
+      await createAccountsPayable(
+        {
+          description: input.description?.trim() || undefined,
+          category: classification.category ?? "FORNECEDOR",
+          expenseGroup: classification.group,
+          expenseDescription: classification.description,
+          expenseSector: classification.sector,
+          payeeName: input.issuerName?.trim() || "Fornecedor",
+          amount: input.totalAmount,
+          dueDate: input.dueDate,
+          paymentMethod: input.paymentMethod,
+          bankAccountId: input.bankAccountId || undefined,
+          installments: input.installments,
+          invoiceNumber: input.number,
+          issueDate: input.issueDate,
+          createdById: input.createdById,
+          invoiceId: invoice.id,
+        },
+        tx
+      );
+    } else {
+      await rememberExpenseClassification(tx, classification);
+    }
+    return invoice.id;
+  });
+
+  return prisma.invoice.findUnique({ where: { id: invoiceId }, include: { payables: { orderBy: { dueDate: "asc" } } } });
 }
 
 export async function issueInvoice(id: string) {
