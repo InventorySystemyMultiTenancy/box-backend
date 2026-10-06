@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { prisma, AppTx } from "@/lib/prisma";
 import { STALE_STATUS_ALERT_DAYS, SUPPLEMENT_PENDING_ALERT_DAYS } from "@/lib/constants";
 
 interface AlertCandidate {
@@ -22,21 +22,25 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
   const tomorrowEnd = new Date(tomorrowStart);
   tomorrowEnd.setHours(23, 59, 59, 999);
 
+  // Só projetos em andamento geram alerta: finalizado, pronto para retirada ou com baixa
+  // dada não é mais pendência da oficina (projeto excluído some sozinho — não existe mais).
+  const activeOrder = { archivedAt: null, status: { notIn: ["FINISHED", "READY_FOR_PICKUP"] } };
+
   const [staleOrders, pendingSupplements, inspectionsToday, deliveriesTomorrow, overduePayables] = await Promise.all([
     prisma.serviceOrder.findMany({
-      where: { status: { notIn: ["READY_FOR_PICKUP"] }, updatedAt: { lte: staleThreshold } },
+      where: { ...activeOrder, updatedAt: { lte: staleThreshold } },
       include: { vehicle: true },
     }),
     prisma.approval.findMany({
-      where: { kind: "SUPPLEMENT", status: "PENDING", createdAt: { lte: supplementThreshold } },
+      where: { kind: "SUPPLEMENT", status: "PENDING", createdAt: { lte: supplementThreshold }, serviceOrder: activeOrder },
       include: { serviceOrder: { include: { vehicle: true } } },
     }),
     prisma.inspection.findMany({
-      where: { status: "SCHEDULED", scheduledAt: { gte: todayStart, lte: todayEnd } },
+      where: { status: "SCHEDULED", scheduledAt: { gte: todayStart, lte: todayEnd }, serviceOrder: activeOrder },
       include: { serviceOrder: { include: { vehicle: true } } },
     }),
     prisma.serviceOrder.findMany({
-      where: { deliveryForecastAt: { gte: tomorrowStart, lte: tomorrowEnd }, status: { notIn: ["READY_FOR_PICKUP"] } },
+      where: { ...activeOrder, deliveryForecastAt: { gte: tomorrowStart, lte: tomorrowEnd } },
       include: { vehicle: true },
     }),
     // Checa a dueDate diretamente (não confia em status já estar "OVERDUE" — esse
@@ -95,30 +99,98 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
   return candidates;
 }
 
-// Gera notificações a partir das regras, evitando duplicar uma já existente e não
-// lida para o mesmo tipo+entidade. Chamado sob demanda (GET /api/alerts), sem
-// depender de um job/cron (não há infraestrutura de background job no projeto).
-export async function refreshAlerts() {
-  // Sem controle de estoque, alertas antigos de "estoque baixo" não fazem mais sentido.
-  await prisma.notification.updateMany({ where: { type: "LOW_STOCK", read: false }, data: { read: true } });
-  const candidates = await computeCandidates();
+function alertKey(alert: { type: string; entity: string | null; entityId: string | null }) {
+  return `${alert.type}|${alert.entity ?? ""}|${alert.entityId ?? ""}`;
+}
 
-  for (const candidate of candidates) {
-    const existing = await prisma.notification.findFirst({
-      where: { type: candidate.type, entity: candidate.entity, entityId: candidate.entityId, read: false },
-    });
-    if (existing) {
-      if (existing.message !== candidate.message) {
-        await prisma.notification.update({ where: { id: existing.id }, data: { message: candidate.message } });
-      }
+interface StoredAlert {
+  id: string;
+  type: string;
+  entity: string | null;
+  entityId: string | null;
+  message: string;
+  read: boolean;
+}
+
+/**
+ * Sincroniza os alertas gravados com as regras (função pura, coberta por alerts.test.ts):
+ * - situação que não existe mais (conta cancelada/paga, projeto finalizado ou excluído,
+ *   OS que voltou a andar...) → o alerta é apagado — se acontecer de novo, alerta de novo;
+ * - "Marcar como lido" vale enquanto a situação for a mesma: o registro lido fica guardado
+ *   e impede recriar o mesmo alerta (antes ele voltava na hora, como se o clique falhasse);
+ * - duplicados do mesmo tipo+registro (criados por esse bug antigo) viram um só — se algum
+ *   foi marcado como lido, prevalece o lido.
+ */
+export function planAlertSync(stored: StoredAlert[], candidates: AlertCandidate[]) {
+  const candidateByKey = new Map(candidates.map((c) => [alertKey(c), c]));
+  const byKey = new Map<string, StoredAlert[]>();
+  for (const alert of stored) byKey.set(alertKey(alert), [...(byKey.get(alertKey(alert)) ?? []), alert]);
+
+  const deleteIds: string[] = [];
+  const updates: { id: string; message: string }[] = [];
+  for (const [key, alerts] of byKey) {
+    const candidate = candidateByKey.get(key);
+    if (!candidate) {
+      deleteIds.push(...alerts.map((a) => a.id));
       continue;
     }
-    await prisma.notification.create({ data: candidate });
+    const keep = alerts.find((a) => a.read) ?? alerts[0];
+    deleteIds.push(...alerts.filter((a) => a.id !== keep.id).map((a) => a.id));
+    if (!keep.read && keep.message !== candidate.message) updates.push({ id: keep.id, message: candidate.message });
   }
+  const create = candidates.filter((c) => !byKey.has(alertKey(c)));
+  return { deleteIds, updates, create };
+}
+
+// Gera/atualiza/retira os alertas conforme as regras. Chamado sob demanda (GET /api/alerts)
+// e pela rotina de hora em hora (jobs/scheduler.ts). Todos os tipos de alerta são gerados
+// por regra — inclusive os antigos de "estoque baixo", que somem por não terem mais regra.
+export async function refreshAlerts() {
+  const candidates = await computeCandidates();
+  const stored = await prisma.notification.findMany({
+    select: { id: true, type: true, entity: true, entityId: true, message: true, read: true },
+  });
+  const plan = planAlertSync(stored, candidates);
+
+  if (plan.deleteIds.length > 0) await prisma.notification.deleteMany({ where: { id: { in: plan.deleteIds } } });
+  for (const update of plan.updates) {
+    await prisma.notification.update({ where: { id: update.id }, data: { message: update.message } });
+  }
+  if (plan.create.length > 0) await prisma.notification.createMany({ data: plan.create });
 
   return prisma.notification.findMany({ where: { read: false }, orderBy: { createdAt: "desc" } });
 }
 
+/**
+ * Retira na hora todos os alertas ligados a um projeto (OS parada, entrega amanhã,
+ * complemento pendente, vistoria hoje) — usado ao excluir, finalizar ou dar baixa, pra
+ * não ficar alerta de projeto que já saiu do andamento até a próxima atualização.
+ */
+export async function clearServiceOrderAlerts(db: Pick<AppTx, "notification" | "approval" | "inspection">, serviceOrderId: string) {
+  const [approvals, inspections] = await Promise.all([
+    db.approval.findMany({ where: { serviceOrderId }, select: { id: true } }),
+    db.inspection.findMany({ where: { serviceOrderId }, select: { id: true } }),
+  ]);
+  await db.notification.deleteMany({
+    where: {
+      OR: [
+        { entity: "ServiceOrder", entityId: serviceOrderId },
+        { entity: "Approval", entityId: { in: approvals.map((a) => a.id) } },
+        { entity: "Inspection", entityId: { in: inspections.map((i) => i.id) } },
+      ],
+    },
+  });
+}
+
+// Marca como lido também os eventuais duplicados do mesmo tipo+registro, pra nenhum
+// continuar aparecendo depois do clique.
 export async function markAlertRead(id: string) {
-  return prisma.notification.update({ where: { id }, data: { read: true } });
+  const notification = await prisma.notification.findUnique({ where: { id } });
+  // Já foi retirado (situação resolvida entre um clique e outro) — nada a fazer.
+  if (!notification) return null;
+  await prisma.notification.updateMany({
+    where: { type: notification.type, entity: notification.entity, entityId: notification.entityId, read: false },
+    data: { read: true },
+  });
+  return { ...notification, read: true };
 }

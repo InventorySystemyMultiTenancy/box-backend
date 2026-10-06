@@ -206,17 +206,22 @@ export async function payAccountPayable(id: string, input: PayInput) {
   const payable = await prisma.accountPayable.findUnique({ where: { id } });
   if (!payable) throw new PayableError("Conta a pagar não encontrada.", 404);
   if (payable.status === "PAID") throw new PayableError("Esta conta já está paga.", 409);
+  if (payable.status === "CANCELLED") throw new PayableError("Esta conta foi cancelada.", 409);
 
-  return prisma.accountPayable.update({
-    where: { id },
-    data: {
-      status: "PAID",
-      paidAt: input.paidAt ? new Date(input.paidAt) : new Date(),
-      paidAmount: input.paidAmount ?? payable.amount,
-      bankAccountId: input.bankAccountId ?? payable.bankAccountId,
-      paymentMethod: input.paymentMethod ?? payable.paymentMethod,
-    },
-  });
+  const [paid] = await prisma.$transaction([
+    prisma.accountPayable.update({
+      where: { id },
+      data: {
+        status: "PAID",
+        paidAt: input.paidAt ? new Date(input.paidAt) : new Date(),
+        paidAmount: input.paidAmount ?? payable.amount,
+        bankAccountId: input.bankAccountId ?? payable.bankAccountId,
+        paymentMethod: input.paymentMethod ?? payable.paymentMethod,
+      },
+    }),
+    resolvePayableAlerts(id),
+  ]);
+  return paid;
 }
 
 // Edição livre de qualquer campo pelo usuário — inclusive de uma conta já paga
@@ -258,7 +263,17 @@ export async function updateAccountPayable(id: string, input: UpdatePayableInput
 export async function cancelAccountPayable(id: string) {
   const payable = await prisma.accountPayable.findUnique({ where: { id } });
   if (!payable) throw new PayableError("Conta a pagar não encontrada.", 404);
-  return prisma.accountPayable.update({ where: { id }, data: { status: "CANCELLED" } });
+  const [cancelled] = await prisma.$transaction([
+    prisma.accountPayable.update({ where: { id }, data: { status: "CANCELLED" } }),
+    resolvePayableAlerts(id),
+  ]);
+  return cancelled;
+}
+
+// Conta cancelada ou paga não é mais alerta — tira da aba Alertas na hora (a rotina de
+// alertas também retiraria, mas só na próxima atualização).
+function resolvePayableAlerts(payableId: string) {
+  return prisma.notification.deleteMany({ where: { entity: "AccountPayable", entityId: payableId } });
 }
 
 async function markOverduePayables() {

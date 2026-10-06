@@ -11,6 +11,7 @@ import { upload, persistUploadedFile } from "@/middleware/upload";
 import { recordAudit } from "@/services/audit.service";
 import { createOrGetShareLink, revokeShareLink, getActiveShareLink, ShareLinkError } from "@/services/share-link.service";
 import { createOrderReceivables, orderAlreadyBilled } from "@/services/service-order-billing.service";
+import { clearServiceOrderAlerts } from "@/services/alerts.service";
 export const serviceOrdersRouter = Router();
 
 const orderInclude = {
@@ -401,6 +402,8 @@ serviceOrdersRouter.patch(
       before: { status: before.status },
       after: { status: order.status },
     });
+    // Chegou em "Finalizado": sai do andamento, então os alertas do projeto saem também.
+    if (order.status === "FINISHED") await clearServiceOrderAlerts(prisma, order.id);
 
     emitToOrder(order.id, "status:update", { orderId: order.id, status: order.status, progress: order.progress });
     if (event) emitToOrder(order.id, "timeline:new", { event });
@@ -493,6 +496,9 @@ serviceOrdersRouter.patch(
         });
       }
 
+      // Projeto entregue não é mais pendência — alertas dele saem da aba Alertas.
+      await clearServiceOrderAlerts(tx, order.id);
+
       return tx.serviceOrder.findUnique({ where: { id: order.id }, include: orderInclude });
     });
 
@@ -519,6 +525,7 @@ serviceOrdersRouter.patch("/:id/archive", requireAuth, requireRole("ADMIN"), asy
     data: { archivedAt: new Date() },
     include: orderInclude,
   });
+  await clearServiceOrderAlerts(prisma, order.id);
 
   emitToOrder(order.id, "service-order:archived", { orderId: order.id, archivedAt: order.archivedAt });
   res.json({ order: hidePricesForMechanic(order, req.user!.role) });
@@ -556,6 +563,9 @@ serviceOrdersRouter.delete("/:id", requireAuth, requireRole("ADMIN"), async (req
   });
 
   await prisma.$transaction(async (tx) => {
+    // Alertas do projeto saem junto (precisa ser antes de apagar aprovações/vistorias).
+    await clearServiceOrderAlerts(tx, id);
+
     // Registros que existem por conta própria só perdem o vínculo com a OS (agenda pode
     // estar ligada a uma pilotagem de caminhão; apontamento de horas é do funcionário;
     // a solicitação de orçamento do cliente continua no histórico dele).
