@@ -98,8 +98,21 @@ appointmentsRouter.post("/", requireAuth, requirePermission("agenda", "manage"),
   }
 });
 
+// Na edição, null = limpar o campo (ex.: tirar o mecânico, apagar a observação).
+const updateAppointmentSchema = appointmentSchema.partial().extend({
+  vehicleId: z.string().nullable().optional(),
+  clientId: z.string().nullable().optional(),
+  serviceOrderId: z.string().nullable().optional(),
+  mechanicId: z.string().nullable().optional(),
+  bayId: z.string().nullable().optional(),
+  driverId: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  pickupLocation: z.string().nullable().optional(),
+  dropoffLocation: z.string().nullable().optional(),
+});
+
 appointmentsRouter.patch("/:id", requireAuth, requirePermission("agenda", "manage"), async (req: AuthedRequest<{ id: string }>, res) => {
-  const parsed = appointmentSchema.partial().safeParse(req.body);
+  const parsed = updateAppointmentSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
   try {

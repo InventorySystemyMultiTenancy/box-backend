@@ -155,15 +155,21 @@ export async function createAppointment(input: AppointmentInput) {
   });
 }
 
-export async function updateAppointment(id: string, input: Partial<AppointmentInput>) {
+// Campos opcionais aceitam null na edição (= limpar), undefined = manter como está.
+export type AppointmentUpdateInput = {
+  [K in keyof AppointmentInput]?: K extends "title" | "startAt" | "type" | "estimatedDurationMin" ? AppointmentInput[K] : AppointmentInput[K] | null;
+};
+
+export async function updateAppointment(id: string, input: AppointmentUpdateInput) {
   const existing = await prisma.appointment.findUnique({ where: { id } });
   if (!existing) throw new AppointmentError("Agendamento não encontrado.", 404);
 
   const startAt = input.startAt ? new Date(input.startAt) : existing.startAt;
   const durationMin = input.estimatedDurationMin ?? existing.estimatedDurationMin;
-  const mechanicId = input.mechanicId !== undefined ? input.mechanicId : existing.mechanicId ?? undefined;
-  const bayId = input.bayId !== undefined ? input.bayId : existing.bayId ?? undefined;
-  const driverId = input.driverId !== undefined ? input.driverId : existing.driverId ?? undefined;
+  const pick = (next: string | null | undefined, current: string | null) => (next !== undefined ? next ?? undefined : current ?? undefined);
+  const mechanicId = pick(input.mechanicId, existing.mechanicId);
+  const bayId = pick(input.bayId, existing.bayId);
+  const driverId = pick(input.driverId, existing.driverId);
 
   if (input.startAt || input.estimatedDurationMin || input.mechanicId !== undefined || input.bayId !== undefined || input.driverId !== undefined) {
     await assertNoConflict({ startAt, durationMin, mechanicId, bayId, driverId, excludeId: id });
@@ -188,9 +194,9 @@ export async function setAppointmentStatus(id: string, status: string) {
 
 export async function deleteAppointment(id: string) {
   const existing = await prisma.appointment.findUnique({ where: { id }, include: { truckTrip: true } });
-  if (!existing) throw new AppointmentError("Agendamento nÃ£o encontrado.", 404);
+  if (!existing) throw new AppointmentError("Agendamento não encontrado.", 404);
   if (existing.truckTrip) {
-    throw new AppointmentError("NÃ£o Ã© possÃ­vel excluir um agendamento vinculado a uma pilotagem de caminhÃ£o.", 409);
+    throw new AppointmentError("Não é possível excluir um agendamento vinculado a uma pilotagem de caminhão.", 409);
   }
   await prisma.appointment.delete({ where: { id } });
 }

@@ -196,12 +196,12 @@ financeRouter.get("/my-expenses", requireAuth, requireRole("MECHANIC", "ADMIN"),
 
 financeRouter.patch("/expenses/:id", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
   const parsed = expenseSchema.partial().safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: "Dados invÃ¡lidos.", details: parsed.error.flatten() });
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
   const existing = await prisma.financialEntry.findUnique({ where: { id: req.params.id } });
-  if (!existing || existing.type !== "EXPENSE") return res.status(404).json({ error: "Gasto nÃ£o encontrado." });
+  if (!existing || existing.type !== "EXPENSE") return res.status(404).json({ error: "Gasto não encontrado." });
   if (req.user!.role !== "ADMIN" && existing.createdById !== req.user!.id) {
-    return res.status(403).json({ error: "VocÃª nÃ£o pode editar este gasto." });
+    return res.status(403).json({ error: "Você não pode editar este gasto." });
   }
 
   const entry = await prisma.financialEntry.update({
@@ -220,12 +220,12 @@ financeRouter.patch("/expenses/:id", requireAuth, requireRole("MECHANIC", "ADMIN
 
 financeRouter.delete("/expenses/:id", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
   const existing = await prisma.financialEntry.findUnique({ where: { id: req.params.id } });
-  if (!existing || existing.type !== "EXPENSE") return res.status(404).json({ error: "Gasto nÃ£o encontrado." });
+  if (!existing || existing.type !== "EXPENSE") return res.status(404).json({ error: "Gasto não encontrado." });
   if (req.user!.role !== "ADMIN" && existing.createdById !== req.user!.id) {
-    return res.status(403).json({ error: "VocÃª nÃ£o pode excluir este gasto." });
+    return res.status(403).json({ error: "Você não pode excluir este gasto." });
   }
   if (existing.serviceOrderId || existing.approvalId || existing.inventoryPartId || existing.partUsageId || existing.counterSaleId) {
-    return res.status(409).json({ error: "NÃ£o Ã© possÃ­vel excluir um lanÃ§amento automÃ¡tico do sistema por aqui." });
+    return res.status(409).json({ error: "Não é possível excluir um lançamento automático do sistema por aqui." });
   }
 
   await prisma.financialEntry.delete({ where: { id: req.params.id } });
