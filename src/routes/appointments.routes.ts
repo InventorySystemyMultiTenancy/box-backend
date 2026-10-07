@@ -8,6 +8,7 @@ import {
   createAppointment,
   updateAppointment,
   setAppointmentStatus,
+  deleteAppointment,
   getMechanicWorkload,
   getBayOccupancy,
   getMyPickupsToday,
@@ -117,6 +118,16 @@ appointmentsRouter.patch("/:id/status", requireAuth, requirePermission("agenda",
   try {
     const appointment = await setAppointmentStatus(req.params.id, parsed.data.status);
     res.json({ appointment });
+  } catch (err) {
+    if (err instanceof AppointmentError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
+});
+
+appointmentsRouter.delete("/:id", requireAuth, requirePermission("agenda", "manage"), async (req: AuthedRequest<{ id: string }>, res) => {
+  try {
+    await deleteAppointment(req.params.id);
+    res.status(204).send();
   } catch (err) {
     if (err instanceof AppointmentError) return res.status(err.status).json({ error: err.message });
     throw err;

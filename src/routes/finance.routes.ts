@@ -194,6 +194,44 @@ financeRouter.get("/my-expenses", requireAuth, requireRole("MECHANIC", "ADMIN"),
   res.json({ entries, total: entries.reduce((sum, e) => sum + e.amount, 0) });
 });
 
+financeRouter.patch("/expenses/:id", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = expenseSchema.partial().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados invÃ¡lidos.", details: parsed.error.flatten() });
+
+  const existing = await prisma.financialEntry.findUnique({ where: { id: req.params.id } });
+  if (!existing || existing.type !== "EXPENSE") return res.status(404).json({ error: "Gasto nÃ£o encontrado." });
+  if (req.user!.role !== "ADMIN" && existing.createdById !== req.user!.id) {
+    return res.status(403).json({ error: "VocÃª nÃ£o pode editar este gasto." });
+  }
+
+  const entry = await prisma.financialEntry.update({
+    where: { id: req.params.id },
+    data: {
+      category: parsed.data.category,
+      description: parsed.data.description,
+      amount: parsed.data.amount,
+      occurredAt: parsed.data.occurredAt ? new Date(parsed.data.occurredAt) : undefined,
+    },
+    include: { createdBy: { select: { id: true, name: true } } },
+  });
+
+  res.json({ entry });
+});
+
+financeRouter.delete("/expenses/:id", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const existing = await prisma.financialEntry.findUnique({ where: { id: req.params.id } });
+  if (!existing || existing.type !== "EXPENSE") return res.status(404).json({ error: "Gasto nÃ£o encontrado." });
+  if (req.user!.role !== "ADMIN" && existing.createdById !== req.user!.id) {
+    return res.status(403).json({ error: "VocÃª nÃ£o pode excluir este gasto." });
+  }
+  if (existing.serviceOrderId || existing.approvalId || existing.inventoryPartId || existing.partUsageId || existing.counterSaleId) {
+    return res.status(409).json({ error: "NÃ£o Ã© possÃ­vel excluir um lanÃ§amento automÃ¡tico do sistema por aqui." });
+  }
+
+  await prisma.financialEntry.delete({ where: { id: req.params.id } });
+  res.status(204).send();
+});
+
 const updateEntrySchema = z.object({
   type: z.enum(["INCOME", "EXPENSE"]).optional(),
   category: z.string().min(1).optional(),

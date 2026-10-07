@@ -186,6 +186,15 @@ export async function setAppointmentStatus(id: string, status: string) {
   return prisma.appointment.update({ where: { id }, data: { status }, include });
 }
 
+export async function deleteAppointment(id: string) {
+  const existing = await prisma.appointment.findUnique({ where: { id }, include: { truckTrip: true } });
+  if (!existing) throw new AppointmentError("Agendamento nÃ£o encontrado.", 404);
+  if (existing.truckTrip) {
+    throw new AppointmentError("NÃ£o Ã© possÃ­vel excluir um agendamento vinculado a uma pilotagem de caminhÃ£o.", 409);
+  }
+  await prisma.appointment.delete({ where: { id } });
+}
+
 interface ConflictCheck {
   startAt: Date;
   durationMin: number;
