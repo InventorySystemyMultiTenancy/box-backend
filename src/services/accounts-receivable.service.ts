@@ -1,7 +1,8 @@
 import { randomUUID } from "crypto";
-import { prisma } from "@/lib/prisma";
+import { prisma, toNumber } from "@/lib/prisma";
 import { parsePageParams, paginated } from "@/lib/pagination";
-import { parseSettlementDate, SettlementDateError, splitInstallments } from "@/services/finance-rules";
+import { parseSettlementDate, SettlementDateError, splitInstallments, summarizeSettlementGroups } from "@/services/finance-rules";
+import { endOfPeriod } from "@/services/cash-flow.service";
 import { createOrderReceivables } from "@/services/service-order-billing.service";
 
 export class ReceivableError extends Error {
@@ -69,21 +70,53 @@ export async function createAccountsReceivable(input: AccountReceivableInput) {
   return prisma.accountReceivable.createManyAndReturn({ data: rows });
 }
 
+// Filtros da aba Contas a receber, SEM o de status — reaproveitado pela lista e pelos totais.
+function receivableFilters(query: Record<string, unknown>) {
+  const category = typeof query.category === "string" && query.category ? query.category : undefined;
+  const clientId = typeof query.clientId === "string" && query.clientId ? query.clientId : undefined;
+  const from = typeof query.from === "string" && query.from ? new Date(query.from) : undefined;
+  // "até" só com data inclui o dia inteiro.
+  const to = typeof query.to === "string" && query.to ? endOfPeriod(query.to) : undefined;
+  return {
+    ...(category ? { category } : {}),
+    ...(clientId ? { clientId } : {}),
+    ...(from || to ? { dueDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+  };
+}
+
+/**
+ * Totais do topo da aba Contas a receber (mesmos filtros da lista, sem o de status): em
+ * aberto (pendentes + vencidas, vencidas à parte) e já recebido (valor efetivamente recebido).
+ */
+export async function summarizeAccountsReceivable(query: Record<string, unknown>) {
+  const where = receivableFilters(query);
+  await markOverdueReceivables();
+  const [groups, receivedWithAmount, receivedWithoutAmount] = await Promise.all([
+    prisma.accountReceivable.groupBy({
+      by: ["status"],
+      where: { ...where, status: { in: ["PENDING", "OVERDUE", "RECEIVED"] } },
+      _sum: { amount: true },
+      _count: { _all: true },
+    }),
+    prisma.accountReceivable.aggregate({ where: { ...where, status: "RECEIVED", receivedAmount: { not: null } }, _sum: { receivedAmount: true } }),
+    prisma.accountReceivable.aggregate({ where: { ...where, status: "RECEIVED", receivedAmount: null }, _sum: { amount: true } }),
+  ]);
+  return summarizeSettlementGroups(
+    groups.map((g) => ({ status: g.status, amount: toNumber(g._sum.amount) ?? 0, count: g._count._all })),
+    (toNumber(receivedWithAmount._sum.receivedAmount) ?? 0) + (toNumber(receivedWithoutAmount._sum.amount) ?? 0),
+    "RECEIVED"
+  );
+}
+
 export async function listAccountsReceivable(query: Record<string, unknown>) {
   const pageParams = parsePageParams(query);
-  const status = typeof query.status === "string" ? query.status : undefined;
-  const category = typeof query.category === "string" ? query.category : undefined;
-  const clientId = typeof query.clientId === "string" ? query.clientId : undefined;
-  const from = typeof query.from === "string" ? new Date(query.from) : undefined;
-  const to = typeof query.to === "string" ? new Date(query.to) : undefined;
+  const status = typeof query.status === "string" && query.status ? query.status : undefined;
 
   await markOverdueReceivables();
 
   const where = {
+    ...receivableFilters(query),
     ...(status ? { status } : {}),
-    ...(category ? { category } : {}),
-    ...(clientId ? { clientId } : {}),
-    ...(from || to ? { dueDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
   };
 
   const [items, total] = await Promise.all([

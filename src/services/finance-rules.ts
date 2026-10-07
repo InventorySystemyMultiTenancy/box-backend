@@ -18,6 +18,34 @@ export function parseSettlementDate(value: string | undefined, now = new Date())
 
 export class SettlementDateError extends Error {}
 
+export interface SettlementSummary {
+  open: { total: number; count: number };
+  overdue: { total: number; count: number };
+  settled: { total: number; count: number };
+}
+
+/**
+ * Totais do topo de Contas a pagar/receber a partir dos grupos por status: em aberto =
+ * pendentes + vencidas (vencidas também à parte); quitadas = PAID/RECEIVED, com o valor
+ * efetivamente pago/recebido (`settledAmount`, que pode diferir do valor da conta).
+ */
+export function summarizeSettlementGroups(
+  groups: { status: string; amount: number; count: number }[],
+  settledAmount: number,
+  settledStatus: "PAID" | "RECEIVED"
+): SettlementSummary {
+  const pick = (statuses: string[]) => {
+    const rows = groups.filter((g) => statuses.includes(g.status));
+    return { total: roundMoney(rows.reduce((s, g) => s + g.amount, 0)), count: rows.reduce((s, g) => s + g.count, 0) };
+  };
+  const settled = pick([settledStatus]);
+  return {
+    open: pick(["PENDING", "OVERDUE"]),
+    overdue: pick(["OVERDUE"]),
+    settled: { total: roundMoney(settledAmount), count: settled.count },
+  };
+}
+
 /** Arredonda pra centavos sem o erro clássico de float (ex.: 1.005 -> 1.01). */
 export function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;

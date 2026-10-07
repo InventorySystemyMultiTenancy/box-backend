@@ -9,6 +9,7 @@ import {
   updateAccountReceivable,
   cancelAccountReceivable,
   createReceivableFromServiceOrder,
+  summarizeAccountsReceivable,
   ReceivableError,
 } from "@/services/accounts-receivable.service";
 
@@ -50,6 +51,11 @@ const updateSchema = z.object({
   notes: z.string().optional(),
   receivedAt: z.string().optional(),
   receivedAmount: z.number().positive().optional(),
+});
+
+// Totais do topo (em aberto / vencido / já recebido), com os mesmos filtros da lista.
+accountsReceivableRouter.get("/summary", requireAuth, requirePermission("finance", "view"), async (req, res) => {
+  res.json({ summary: await summarizeAccountsReceivable(req.query as Record<string, unknown>) });
 });
 
 accountsReceivableRouter.get("/", requireAuth, requirePermission("finance", "view"), async (req, res) => {

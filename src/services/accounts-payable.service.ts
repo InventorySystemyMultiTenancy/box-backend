@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
-import { prisma, AppTx } from "@/lib/prisma";
+import { prisma, AppTx, toNumber } from "@/lib/prisma";
 import { parsePageParams, paginated } from "@/lib/pagination";
-import { parseSettlementDate, roundMoney, SettlementDateError, splitInstallments } from "@/services/finance-rules";
+import { parseSettlementDate, roundMoney, SettlementDateError, splitInstallments, summarizeSettlementGroups } from "@/services/finance-rules";
 import { normalizeClassification, rememberExpenseClassification } from "@/services/expense-classifications.service";
 import { endOfPeriod } from "@/services/cash-flow.service";
 
@@ -81,6 +81,48 @@ export function payableDisplayDescription(input: Pick<AccountPayableInput, "desc
   return [what, input.payeeName, input.invoiceNumber ? `NF ${input.invoiceNumber}` : null].filter(Boolean).join(" — ");
 }
 
+interface PayableInvoiceData {
+  number: string;
+  issuerName: string;
+  totalAmount: number;
+  issueDate: Date;
+  operationNature: string;
+  expenseGroup?: string;
+  expenseDescription?: string;
+  expenseSector?: string;
+  bankAccountId?: string;
+  paymentMethod?: string;
+  description?: string;
+}
+
+/**
+ * Nota fiscal de uma conta a pagar: se já existe nota ativa com o mesmo número e o mesmo
+ * fornecedor, usa ela (não duplica a nota); senão registra uma nova, já emitida (MANUAL —
+ * documento que já existe, não emitido pelo sistema).
+ */
+async function findOrCreatePayableInvoice(db: Pick<AppTx, "invoice">, data: PayableInvoiceData) {
+  const existing = await db.invoice.findFirst({
+    where: {
+      number: { equals: data.number, mode: "insensitive" },
+      issuerName: { equals: data.issuerName, mode: "insensitive" },
+      status: { not: "CANCELLED" },
+    },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+
+  const invoice = await db.invoice.create({
+    data: {
+      type: "NFE",
+      status: "ISSUED",
+      provider: "MANUAL",
+      ...data,
+    },
+    select: { id: true },
+  });
+  return invoice.id;
+}
+
 // Cada duplicata vira um registro; mais de uma compartilham groupId e têm
 // installmentNumber/Total — cada uma é baixada individualmente. Sem duplicatas digitadas,
 // divide `amount` em `installments` meses a partir de `dueDate` (comportamento antigo).
@@ -144,17 +186,38 @@ export async function createAccountsPayable(input: AccountPayableInput, tx?: App
 
   const run = async (db: AppTx) => {
     await rememberExpenseClassification(db, { ...classification, category });
+
+    // Conta lançada com número de nota fiscal (formulário "Cadastrar contas a pagar") também
+    // é uma nota: cria/liga a Invoice pra ela aparecer na aba Notas fiscais. Quem já vem de
+    // uma nota (invoiceId — ver invoices.service.ts) não cria outra.
+    const invoiceNumber = input.invoiceNumber?.trim();
+    const invoiceId =
+      input.invoiceId ??
+      (invoiceNumber
+        ? await findOrCreatePayableInvoice(db, {
+            number: invoiceNumber,
+            issuerName: input.payeeName.trim(),
+            totalAmount: roundMoney(rows.reduce((sum, r) => sum + r.amount, 0)),
+            issueDate: input.issueDate ? new Date(input.issueDate) : new Date(),
+            operationNature: category,
+            expenseGroup: classification.group,
+            expenseDescription: classification.description,
+            expenseSector: classification.sector,
+            bankAccountId: input.bankAccountId,
+            paymentMethod: rows[0]?.paymentMethod,
+            description: input.notes?.trim() || undefined,
+          })
+        : undefined);
+
     // Devolve exatamente as linhas criadas (buscar por descrição depois podia trazer outra igual).
-    return db.accountPayable.createManyAndReturn({ data: rows });
+    return db.accountPayable.createManyAndReturn({ data: rows.map((r) => ({ ...r, invoiceId })) });
   };
   return tx ? run(tx) : prisma.$transaction((t) => run(t));
 }
 
-export async function listAccountsPayable(query: Record<string, unknown>) {
-  const pageParams = parsePageParams(query);
-  const status = typeof query.status === "string" ? query.status : undefined;
-  // Separação rápida: "open" = a pagar (pendente/vencida), "paid" = pagas.
-  const situation = query.situation === "open" || query.situation === "paid" ? query.situation : undefined;
+// Filtros da aba Contas a pagar, SEM o de situação/status — reaproveitado pela listagem
+// (que soma o filtro de situação) e pelos totais do topo (que mostram aberto e pago juntos).
+function payableFilters(query: Record<string, unknown>) {
   const category = typeof query.category === "string" ? query.category : undefined;
   const from = typeof query.from === "string" && query.from ? new Date(query.from) : undefined;
   // "até" só com data inclui o dia inteiro.
@@ -169,10 +232,9 @@ export async function listAccountsPayable(query: Record<string, unknown>) {
   const sector = typeof query.sector === "string" && query.sector.trim() ? query.sector.trim() : undefined;
   const group = typeof query.group === "string" && query.group.trim() ? query.group.trim() : undefined;
 
-  await markOverduePayables();
-
-  const where = {
-    ...(status ? { status } : situation === "open" ? { status: { in: ["PENDING", "OVERDUE"] } } : situation === "paid" ? { status: "PAID" } : {}),
+  return {
+    dateField,
+    where: {
     ...(category ? { category } : {}),
     ...(sector ? { expenseSector: sector } : {}),
     ...(group ? { expenseGroup: group } : {}),
@@ -187,6 +249,22 @@ export async function listAccountsPayable(query: Record<string, unknown>) {
           ],
         }
       : {}),
+    },
+  };
+}
+
+export async function listAccountsPayable(query: Record<string, unknown>) {
+  const pageParams = parsePageParams(query);
+  const status = typeof query.status === "string" ? query.status : undefined;
+  // Separação rápida: "open" = a pagar (pendente/vencida), "paid" = pagas.
+  const situation = query.situation === "open" || query.situation === "paid" ? query.situation : undefined;
+  const { where: filters, dateField } = payableFilters(query);
+
+  await markOverduePayables();
+
+  const where = {
+    ...filters,
+    ...(status ? { status } : situation === "open" ? { status: { in: ["PENDING", "OVERDUE"] } } : situation === "paid" ? { status: "PAID" } : {}),
   };
 
   const [items, total] = await Promise.all([
@@ -207,6 +285,36 @@ export async function listAccountsPayable(query: Record<string, unknown>) {
   ]);
 
   return paginated(items, total, pageParams);
+}
+
+/**
+ * Totais do topo da aba Contas a pagar, com os mesmos filtros da lista (período, nome,
+ * nota, setor, categoria, grupo) mas sem o de situação: em aberto (pendentes + vencidas,
+ * com a parte vencida destacada) e já pago (valor efetivamente pago). Canceladas não entram.
+ */
+export async function summarizeAccountsPayable(query: Record<string, unknown>) {
+  const { where } = payableFilters(query);
+  await markOverduePayables();
+  const groups = await prisma.accountPayable.groupBy({
+    by: ["status"],
+    where: { ...where, status: { in: ["PENDING", "OVERDUE", "PAID"] } },
+    _sum: { amount: true },
+    _count: { _all: true },
+  });
+  // Pago = paidAmount quando informado (pode diferir do valor da conta), senão o valor da conta.
+  const paidWithoutAmount = await prisma.accountPayable.aggregate({
+    where: { ...where, status: "PAID", paidAmount: null },
+    _sum: { amount: true },
+  });
+  const paidWithAmount = await prisma.accountPayable.aggregate({
+    where: { ...where, status: "PAID", paidAmount: { not: null } },
+    _sum: { paidAmount: true },
+  });
+  return summarizeSettlementGroups(
+    groups.map((g) => ({ status: g.status, amount: toNumber(g._sum.amount) ?? 0, count: g._count._all })),
+    (toNumber(paidWithAmount._sum.paidAmount) ?? 0) + (toNumber(paidWithoutAmount._sum.amount) ?? 0),
+    "PAID"
+  );
 }
 
 export async function payAccountPayable(id: string, input: PayInput) {

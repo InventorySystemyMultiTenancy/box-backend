@@ -77,6 +77,8 @@ export async function listInvoices(query: Record<string, unknown>) {
       OR: [
         { client: { name: { contains: clientName, mode: "insensitive" } } },
         { recipientName: { contains: clientName, mode: "insensitive" } },
+        // Notas de despesa (contas a pagar) — o nome buscado é o do fornecedor/emitente.
+        { issuerName: { contains: clientName, mode: "insensitive" } },
       ],
     });
   }

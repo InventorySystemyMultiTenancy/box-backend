@@ -1,5 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { isDuplicatedOrderIncome, orderBillingTotal, parseSettlementDate, roundMoney, SettlementDateError, splitInstallments } from "@/services/finance-rules";
+import { isDuplicatedOrderIncome, orderBillingTotal, parseSettlementDate, roundMoney, SettlementDateError, splitInstallments, summarizeSettlementGroups } from "@/services/finance-rules";
+
+describe("summarizeSettlementGroups", () => {
+  it("em aberto = pendentes + vencidas; vencidas à parte; quitado usa o valor efetivamente pago", () => {
+    const summary = summarizeSettlementGroups(
+      [
+        { status: "PENDING", amount: 100.1, count: 2 },
+        { status: "OVERDUE", amount: 50.2, count: 1 },
+        { status: "PAID", amount: 300, count: 3 },
+      ],
+      295.5,
+      "PAID"
+    );
+    expect(summary).toEqual({
+      open: { total: 150.3, count: 3 },
+      overdue: { total: 50.2, count: 1 },
+      settled: { total: 295.5, count: 3 },
+    });
+  });
+
+  it("sem contas, tudo zerado", () => {
+    expect(summarizeSettlementGroups([], 0, "RECEIVED")).toEqual({
+      open: { total: 0, count: 0 },
+      overdue: { total: 0, count: 0 },
+      settled: { total: 0, count: 0 },
+    });
+  });
+});
 
 describe("parseSettlementDate", () => {
   const now = new Date(2026, 9, 7, 15, 30);

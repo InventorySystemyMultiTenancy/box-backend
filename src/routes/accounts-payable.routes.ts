@@ -8,6 +8,7 @@ import {
   payAccountPayable,
   updateAccountPayable,
   cancelAccountPayable,
+  summarizeAccountsPayable,
   PayableError,
 } from "@/services/accounts-payable.service";
 import { listExpenseClassifications } from "@/services/expense-classifications.service";
@@ -79,6 +80,11 @@ const updateSchema = z.object({
 // formulários de conta a pagar e de nota fiscal de despesa.
 accountsPayableRouter.get("/classifications", requireAuth, async (_req, res) => {
   res.json(await listExpenseClassifications());
+});
+
+// Totais do topo (em aberto / vencido / já pago), com os mesmos filtros da lista.
+accountsPayableRouter.get("/summary", requireAuth, requirePermission("finance", "view"), async (req, res) => {
+  res.json({ summary: await summarizeAccountsPayable(req.query as Record<string, unknown>) });
 });
 
 accountsPayableRouter.get("/", requireAuth, requirePermission("finance", "view"), async (req, res) => {
