@@ -11,8 +11,10 @@ import {
   getMechanicWorkload,
   getBayOccupancy,
   getMyPickupsToday,
+  getDriverSchedule,
   AppointmentError,
 } from "@/services/appointments.service";
+import { hasPermission } from "@/services/permissions.service";
 import { APPOINTMENT_STATUSES, APPOINTMENT_TYPES } from "@/lib/constants";
 
 export const appointmentsRouter = Router();
@@ -29,6 +31,8 @@ const appointmentSchema = z.object({
   startAt: z.string().datetime(),
   estimatedDurationMin: z.number().int().min(5).max(24 * 60).optional(),
   notes: z.string().optional(),
+  pickupLocation: z.string().optional(),
+  dropoffLocation: z.string().optional(),
 });
 
 const statusSchema = z.object({ status: z.enum(APPOINTMENT_STATUSES) });
@@ -44,6 +48,20 @@ appointmentsRouter.get("/", requireAuth, requirePermission("agenda", "view"), as
 appointmentsRouter.get("/my-pickups-today", requireAuth, async (req: AuthedRequest, res) => {
   const appointments = await getMyPickupsToday(req.user!.id);
   res.json({ appointments });
+});
+
+// Planilha de agendamento dos motoristas (?from=&to=&driverId=). Quem tem a agenda
+// (agenda.view) vê todos ou filtra por motorista; o motorista sem acesso à Agenda (cargo
+// que só vê Caminhões) recebe só os agendamentos dele, seja qual for o driverId pedido.
+appointmentsRouter.get("/driver-schedule", requireAuth, async (req: AuthedRequest, res) => {
+  const canSeeAll = await hasPermission(req.user!.id, "agenda", "view");
+  const requestedDriver = typeof req.query.driverId === "string" && req.query.driverId ? req.query.driverId : undefined;
+  const appointments = await getDriverSchedule({
+    from: typeof req.query.from === "string" ? req.query.from : undefined,
+    to: typeof req.query.to === "string" ? req.query.to : undefined,
+    driverId: canSeeAll ? requestedDriver : req.user!.id,
+  });
+  res.json({ appointments, scope: canSeeAll ? "all" : "own" });
 });
 
 appointmentsRouter.get("/workload", requireAuth, requirePermission("agenda", "view"), async (req, res) => {

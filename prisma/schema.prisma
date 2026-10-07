@@ -419,6 +419,10 @@ model Appointment {
   estimatedDurationMin Int           @default(60)
   status               String        @default("SCHEDULED") // SCHEDULED | CONFIRMED | IN_PROGRESS | DONE | CANCELLED | NO_SHOW
   notes                String?
+  // Tarefa de motorista (PICKUP/DROPOFF): de onde o veículo é retirado e onde é entregue —
+  // colunas "retirada" e "entrega" da planilha de agendamento diário dos motoristas.
+  pickupLocation       String?
+  dropoffLocation      String?
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 

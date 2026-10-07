@@ -22,6 +22,8 @@ export interface AppointmentInput {
   startAt: string;
   estimatedDurationMin?: number;
   notes?: string;
+  pickupLocation?: string;
+  dropoffLocation?: string;
 }
 
 const include = {
@@ -99,6 +101,28 @@ export async function getMyPickupsToday(driverId: string) {
   });
 }
 
+/**
+ * Planilha de agendamento dos motoristas (retiradas/entregas) num período — usada na Agenda
+ * (todos os motoristas ou um) e na aba Caminhões (o motorista vê só os dele). Cancelados
+ * e não comparecimentos ficam de fora; a lista vem por data/horário e motorista.
+ */
+export async function getDriverSchedule({ from, to, driverId }: { from?: string; to?: string; driverId?: string }) {
+  await autoCompletePastAppointments();
+  const start = from ? new Date(`${from.slice(0, 10)}T00:00:00`) : undefined;
+  const end = to ? new Date(`${to.slice(0, 10)}T23:59:59.999`) : undefined;
+
+  return prisma.appointment.findMany({
+    where: {
+      type: { in: PICKUP_DROPOFF_TYPES },
+      status: { notIn: ["CANCELLED", "NO_SHOW"] },
+      ...(driverId ? { driverId } : { driverId: { not: null } }),
+      ...(start || end ? { startAt: { ...(start ? { gte: start } : {}), ...(end ? { lte: end } : {}) } } : {}),
+    },
+    include,
+    orderBy: [{ startAt: "asc" }],
+  });
+}
+
 export async function getAppointmentDetail(id: string) {
   const appointment = await prisma.appointment.findUnique({ where: { id }, include });
   if (!appointment) throw new AppointmentError("Agendamento não encontrado.", 404);
@@ -124,6 +148,8 @@ export async function createAppointment(input: AppointmentInput) {
       startAt,
       estimatedDurationMin: durationMin,
       notes: input.notes,
+      pickupLocation: input.pickupLocation?.trim() || undefined,
+      dropoffLocation: input.dropoffLocation?.trim() || undefined,
     },
     include,
   });

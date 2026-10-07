@@ -26,6 +26,8 @@ function monthKey(date: Date) {
 // cheia da venda entra à parte, pela conta a receber categoria "PDV" (ver ponto abaixo).
 // Contar as duas contaria a mesma venda duas vezes.
 const PDV_PROFIT_CATEGORY = "LUCRO_PDV";
+// Categorias que a aba Gastos sempre oferece (pedido da oficina para os motoristas em viagem).
+const DEFAULT_EXPENSE_CATEGORIES = ["Refeição", "Hotel", "Diversos"];
 const PART_COST_CATEGORY = "PEÇA";
 
 function periodWhere(field: string, from?: string, to?: string) {
@@ -138,7 +140,9 @@ financeRouter.get("/expense-categories", requireAuth, requireRole("MECHANIC", "A
     select: { category: true },
     orderBy: { category: "asc" },
   });
-  res.json({ categories: rows.map((r) => r.category) });
+  // Categorias padrão (sempre aparecem, mesmo antes do primeiro gasto) + as já usadas.
+  const used = rows.map((r) => r.category).filter((c) => !DEFAULT_EXPENSE_CATEGORIES.some((d) => d.toLowerCase() === c.toLowerCase()));
+  res.json({ categories: [...DEFAULT_EXPENSE_CATEGORIES, ...used] });
 });
 
 const expenseSchema = z.object({
