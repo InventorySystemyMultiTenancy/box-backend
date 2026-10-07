@@ -242,21 +242,31 @@ const refuelingSchema = z.object({
 });
 
 // Foto da bomba é obrigatória — é a mesma foto que a IA lê (rota /recognize-pump)
-// para sugerir valor pago/litros antes do envio deste formulário.
+// para sugerir valor pago/litros antes do envio deste formulário. A foto do painel é
+// opcional — a IA lê o km dela (rota /recognize-panel) e ela fica salva no histórico.
 trucksRouter.post(
   "/:id/refuelings",
   requireAuth,
   requireRole("MECHANIC", "ADMIN"),
-  upload.single("photo"),
+  upload.fields([
+    { name: "photo", maxCount: 1 },
+    { name: "panelPhoto", maxCount: 1 },
+  ]),
   async (req: AuthedRequest<{ id: string }>, res) => {
     const parsed = refuelingSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
-    if (!req.file) return res.status(400).json({ error: "A foto da bomba de combustível é obrigatória." });
+    const files = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
+    const pumpFile = files.photo?.[0];
+    const panelFile = files.panelPhoto?.[0];
+    if (!pumpFile) return res.status(400).json({ error: "A foto da bomba de combustível é obrigatória." });
 
-    const photoUrl = await persistUploadedFile(req.file);
+    const [photoUrl, panelPhotoUrl] = await Promise.all([
+      persistUploadedFile(pumpFile),
+      panelFile ? persistUploadedFile(panelFile) : Promise.resolve(undefined),
+    ]);
 
     try {
-      const refueling = await createRefueling(req.params.id, req.user!.id, req.user!.role, { ...parsed.data, photoUrl });
+      const refueling = await createRefueling(req.params.id, req.user!.id, req.user!.role, { ...parsed.data, photoUrl, panelPhotoUrl });
       const [withAlerts] = await withAlertsForAdmin([refueling], req.user!.role);
       res.status(201).json({ refueling: withAlerts });
     } catch (err) {

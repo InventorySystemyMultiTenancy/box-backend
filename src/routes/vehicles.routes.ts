@@ -4,13 +4,20 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { upload } from "@/middleware/upload";
+import { canSeeAlertType, canSeeSection, getReportAccess } from "@/lib/report-access";
 import { getVehicleHistory, listRevisionAlerts, VehicleHistoryError } from "@/services/vehicle-history.service";
 import { recognizeVehicleFromImage, VehicleRecognitionError } from "@/services/vehicle-recognition.service";
 
 export const vehiclesRouter = Router();
 
 // Rotas estáticas antes de "/:id" para não colidir com o param.
-vehiclesRouter.get("/revision-alerts", requireAuth, requireRole("MECHANIC", "ADMIN"), async (_req, res) => {
+// Usado pelo bloco "Revisão preventiva" da aba Relatórios e pelos lembretes da aba Alertas —
+// o cargo precisa ter um dos dois liberado.
+vehiclesRouter.get("/revision-alerts", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
+  const access = await getReportAccess(req.user!.id);
+  if (!canSeeSection(access, "revision") && !canSeeAlertType(access, "REVISION_REMINDER")) {
+    return res.status(403).json({ error: "Seu cargo não tem acesso à revisão preventiva." });
+  }
   const alerts = await listRevisionAlerts();
   res.json({ alerts });
 });

@@ -177,6 +177,8 @@ const refuelingInclude = {
 
 export interface RefuelingInput {
   photoUrl: string;
+  // Foto do painel (opcional) — o km lido dela pela IA já vem em currentKm.
+  panelPhotoUrl?: string;
   currentKm: number;
   liters: number;
   amountPaid: number;
@@ -218,6 +220,7 @@ export async function createRefueling(truckId: string, userId: string, role: str
       tripId: openTrip.id,
       driverId: userId,
       photoUrl: input.photoUrl,
+      panelPhotoUrl: input.panelPhotoUrl,
       currentKm: input.currentKm,
       referenceKm,
       liters: input.liters,

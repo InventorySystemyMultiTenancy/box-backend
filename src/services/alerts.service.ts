@@ -1,4 +1,5 @@
 import { prisma, AppTx } from "@/lib/prisma";
+import { ReportAccess, canSeeAlertType, canSeeSector } from "@/lib/report-access";
 import { STALE_STATUS_ALERT_DAYS, SUPPLEMENT_PENDING_ALERT_DAYS } from "@/lib/constants";
 
 interface AlertCandidate {
@@ -159,6 +160,25 @@ export async function refreshAlerts() {
   if (plan.create.length > 0) await prisma.notification.createMany({ data: plan.create });
 
   return prisma.notification.findMany({ where: { read: false }, orderBy: { createdAt: "desc" } });
+}
+
+/**
+ * Só os alertas que o cargo do usuário pode ver: tipos liberados (Role.alertTypes) e, nas
+ * contas a pagar vencidas, só as dos setores de despesa liberados (Role.expenseSectors).
+ */
+export async function filterAlertsForAccess<T extends { type: string; entity: string | null; entityId: string | null }>(
+  alerts: T[],
+  access: ReportAccess
+) {
+  const byType = alerts.filter((a) => canSeeAlertType(access, a.type));
+  if (access.sectors === null) return byType;
+
+  const payableIds = byType.filter((a) => a.entity === "AccountPayable" && a.entityId).map((a) => a.entityId!);
+  const payables = payableIds.length
+    ? await prisma.accountPayable.findMany({ where: { id: { in: payableIds } }, select: { id: true, expenseSector: true } })
+    : [];
+  const sectorById = new Map(payables.map((p) => [p.id, p.expenseSector]));
+  return byType.filter((a) => a.entity !== "AccountPayable" || canSeeSector(access, sectorById.get(a.entityId ?? "")));
 }
 
 /**

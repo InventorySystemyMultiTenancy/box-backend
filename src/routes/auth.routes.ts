@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { signToken } from "@/lib/jwt";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { getEffectivePermissions, getAllowedTabs } from "@/services/permissions.service";
+import { getReportAccess } from "@/lib/report-access";
 import { upload, persistUploadedFile } from "@/middleware/upload";
 import rateLimit from "express-rate-limit";
 import { requestPasswordReset, resetPassword } from "@/services/password-reset.service";
@@ -206,9 +207,12 @@ authRouter.get("/me", requireAuth, async (req: AuthedRequest, res) => {
 });
 
 authRouter.get("/me/permissions", requireAuth, async (req: AuthedRequest, res) => {
-  const effective = await getEffectivePermissions(req.user!.id);
-  const allowedTabs = await getAllowedTabs(req.user!.id);
-  res.json({ permissions: Array.from(effective), allowedTabs });
+  const [effective, allowedTabs, reportAccess] = await Promise.all([
+    getEffectivePermissions(req.user!.id),
+    getAllowedTabs(req.user!.id),
+    getReportAccess(req.user!.id),
+  ]);
+  res.json({ permissions: Array.from(effective), allowedTabs, reportAccess });
 });
 
 authRouter.patch("/me/avatar", requireAuth, upload.single("avatar"), async (req: AuthedRequest, res) => {

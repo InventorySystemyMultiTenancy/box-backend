@@ -429,21 +429,28 @@ model Appointment {
 
 // Cargo administrável (Mecânico, Financeiro, Gerente...) — não hardcoded.
 model Role {
-  id          String   @id @default(cuid())
-  name        String
-  slug        String   @unique
-  description String?
-  isSystem    Boolean  @default(false) // protege roles seed (Administrador/Mecânico) contra exclusão
+  id             String   @id @default(cuid())
+  name           String
+  slug           String   @unique
+  description    String?
+  isSystem       Boolean  @default(false) // protege roles seed (Administrador/Mecânico) contra exclusão
   // Perfil de acesso (User.role) que este cargo pressupõe — CUSTOMER não usa cargo.
   // Ao criar/editar um usuário escolhendo este cargo, o Perfil vem daqui em vez de a
   // pessoa escolher Perfil e Cargo por conta própria e poder juntar uma combinação sem
   // sentido (ex.: Perfil Cliente + Cargo "Motorista").
-  baseRole    String   @default("MECHANIC") // MECHANIC | ADMIN
+  baseRole       String   @default("MECHANIC") // MECHANIC | ADMIN
   // Lista de chaves de aba (ver TAB_KEYS no frontend) que usuários deste cargo podem
   // ver na navegação — vazio = sem restrição extra (cai no role/hasPermission de sempre).
-  allowedTabs String[] @default([])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  allowedTabs    String[] @default([])
+  // Aba Relatórios: blocos que o cargo vê (ver REPORT_SECTIONS em lib/report-access.ts)
+  // e setores de despesa cujos números financeiros ele vê. Vazio = tudo.
+  reportSections String[] @default([])
+  expenseSectors String[] @default([])
+  // Aba Alertas: tipos de alerta que o cargo vê (ver ALERT_TYPES). Vazio = todos. Os
+  // alertas de conta vencida também respeitam expenseSectors.
+  alertTypes     String[] @default([])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   users           User[]
   rolePermissions RolePermission[]
@@ -1149,6 +1156,9 @@ model TruckRefueling {
   driverId      String
   driver        User      @relation("TruckRefuelingDriver", fields: [driverId], references: [id])
   photoUrl      String
+  // Foto do painel (hodômetro) no momento do abastecimento — opcional; a IA lê o km dela
+  // para preencher currentKm. Aparece no histórico junto da foto da bomba.
+  panelPhotoUrl String?
   currentKm     Int
   referenceKm   Int
   liters        Float

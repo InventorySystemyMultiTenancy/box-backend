@@ -1,14 +1,16 @@
 import { prisma } from "@/lib/prisma";
 import { LEGACY_ORDER_INCOME_CATEGORIES, roundMoney } from "@/services/finance-rules";
 import { dropDuplicatedOrderIncome } from "@/services/service-order-billing.service";
+import { endOfPeriod, getCashFlow, getDRE } from "@/services/cash-flow.service";
 
 export interface PeriodQuery {
   from?: string;
   to?: string;
 }
 
+// "até" só com data inclui o dia inteiro (ver endOfPeriod).
 function range({ from, to }: PeriodQuery) {
-  return { ...(from ? { gte: new Date(from) } : {}), ...(to ? { lte: new Date(to) } : {}) };
+  return { ...(from ? { gte: new Date(from) } : {}), ...(to ? { lte: endOfPeriod(to) } : {}) };
 }
 
 export async function getDashboardReport(query: PeriodQuery) {
@@ -51,6 +53,58 @@ async function getRevenue(query: PeriodQuery) {
   ]);
   const count = attendances.size;
   return { total, count, ticketMedio: count > 0 ? roundMoney(total / count) : 0 };
+}
+
+/**
+ * Dados do "PDF financeiro do período" (aba Relatórios), já recortados pelo cargo:
+ * - sem restrição de setor: fluxo de caixa completo, DRE e o que está em aberto;
+ * - com setores (Role.expenseSectors): só as despesas desses setores — receitas, lançamentos
+ *   manuais e saldos bancários não têm setor, então ficam de fora do relatório dele.
+ */
+export async function getFinancialReport(query: PeriodQuery, sectors: string[] | null) {
+  const dueRange = range(query);
+  const sectorWhere = sectors ? { expenseSector: { in: sectors, mode: "insensitive" as const } } : {};
+
+  const [openPayables, openReceivables] = await Promise.all([
+    prisma.accountPayable.findMany({
+      where: { status: { in: ["PENDING", "OVERDUE"] }, dueDate: dueRange, ...sectorWhere },
+      orderBy: { dueDate: "asc" },
+    }),
+    sectors
+      ? Promise.resolve([])
+      : prisma.accountReceivable.findMany({
+          where: { status: { in: ["PENDING", "OVERDUE"] }, dueDate: dueRange },
+          include: { client: { select: { id: true, name: true } } },
+          orderBy: { dueDate: "asc" },
+        }),
+  ]);
+
+  if (!sectors) {
+    const [cashFlow, dre] = await Promise.all([getCashFlow(query), getDRE(query)]);
+    return { restrictedSectors: null, cashFlow, dre, openPayables, openReceivables };
+  }
+
+  const paid = await prisma.accountPayable.findMany({
+    where: { status: "PAID", paidAt: range(query), ...sectorWhere },
+    orderBy: { paidAt: "asc" },
+  });
+  const totalOut = roundMoney(paid.reduce((sum, p) => sum + (p.paidAmount ?? p.amount), 0));
+  const byCategory = new Map<string, number>();
+  for (const p of paid) byCategory.set(p.category, roundMoney((byCategory.get(p.category) ?? 0) + (p.paidAmount ?? p.amount)));
+
+  return {
+    restrictedSectors: sectors,
+    cashFlow: { initialBalance: null, totalIn: 0, totalOut, finalBalance: null, timeline: [], partsCost: 0, receivables: [], payables: paid, entries: [] },
+    dre: {
+      grossRevenue: 0,
+      totalExpenses: totalOut,
+      netResult: -totalOut,
+      revenueByCategory: [],
+      expensesByCategory: [...byCategory.entries()].map(([category, amount]) => ({ category, amount })),
+    },
+    openPayables,
+    openReceivables,
+  };
 }
 
 /**

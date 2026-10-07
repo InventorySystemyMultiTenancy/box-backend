@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireAuth, AuthedRequest } from "@/middleware/auth";
 import { requirePermission } from "@/middleware/permissions";
 import { listPermissionCatalog } from "@/services/permissions.service";
+import { ALERT_TYPES, REPORT_SECTIONS } from "@/lib/report-access";
 import {
   listRoles,
   createRole,
@@ -40,6 +41,10 @@ const updateRoleSchema = z.object({
   description: z.string().optional(),
   baseRole: z.enum(["MECHANIC", "ADMIN"]).optional(),
   allowedTabs: z.array(z.string()).optional(),
+  // Relatórios e alertas (vazio = vê tudo).
+  reportSections: z.array(z.enum(REPORT_SECTIONS)).optional(),
+  expenseSectors: z.array(z.string().trim().min(1)).optional(),
+  alertTypes: z.array(z.enum(ALERT_TYPES)).optional(),
 });
 
 const setPermissionsSchema = z.object({
