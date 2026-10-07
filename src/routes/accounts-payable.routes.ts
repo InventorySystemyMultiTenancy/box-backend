@@ -9,6 +9,7 @@ import {
   updateAccountPayable,
   cancelAccountPayable,
   summarizeAccountsPayable,
+  payableDueWarnings,
   PayableError,
 } from "@/services/accounts-payable.service";
 import { listExpenseClassifications } from "@/services/expense-classifications.service";
@@ -85,6 +86,11 @@ accountsPayableRouter.get("/classifications", requireAuth, async (_req, res) => 
 // Totais do topo (em aberto / vencido / já pago), com os mesmos filtros da lista.
 accountsPayableRouter.get("/summary", requireAuth, requirePermission("finance", "view"), async (req, res) => {
   res.json({ summary: await summarizeAccountsPayable(req.query as Record<string, unknown>) });
+});
+
+// Aviso piscante da aba: vencidas e que vencem em breve (sem filtros).
+accountsPayableRouter.get("/due-warnings", requireAuth, requirePermission("finance", "view"), async (_req, res) => {
+  res.json({ warnings: await payableDueWarnings() });
 });
 
 accountsPayableRouter.get("/", requireAuth, requirePermission("finance", "view"), async (req, res) => {

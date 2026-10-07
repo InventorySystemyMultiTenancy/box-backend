@@ -317,6 +317,32 @@ export async function summarizeAccountsPayable(query: Record<string, unknown>) {
   );
 }
 
+/** Quantos dias antes do vencimento a conta passa a contar como "vence em breve". */
+export const PAYABLE_DUE_SOON_DAYS = 3;
+
+/**
+ * Aviso da aba Contas a pagar (sem filtros): contas vencidas e contas que vencem nos
+ * próximos PAYABLE_DUE_SOON_DAYS dias. Canceladas e pagas não entram.
+ */
+export async function payableDueWarnings() {
+  await markOverduePayables();
+  const now = new Date();
+  const limit = new Date(now.getTime() + PAYABLE_DUE_SOON_DAYS * 24 * 60 * 60 * 1000);
+  const [overdue, dueSoon] = await Promise.all([
+    prisma.accountPayable.aggregate({ where: { status: "OVERDUE" }, _sum: { amount: true }, _count: { _all: true } }),
+    prisma.accountPayable.aggregate({
+      where: { status: "PENDING", dueDate: { gte: now, lte: limit } },
+      _sum: { amount: true },
+      _count: { _all: true },
+    }),
+  ]);
+  return {
+    dueSoonDays: PAYABLE_DUE_SOON_DAYS,
+    overdue: { count: overdue._count._all, total: roundMoney(toNumber(overdue._sum.amount) ?? 0) },
+    dueSoon: { count: dueSoon._count._all, total: roundMoney(toNumber(dueSoon._sum.amount) ?? 0) },
+  };
+}
+
 export async function payAccountPayable(id: string, input: PayInput) {
   const payable = await prisma.accountPayable.findUnique({ where: { id } });
   if (!payable) throw new PayableError("Conta a pagar não encontrada.", 404);
