@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { parsePageParams, paginated } from "@/lib/pagination";
-import { splitInstallments } from "@/services/finance-rules";
+import { parseSettlementDate, SettlementDateError, splitInstallments } from "@/services/finance-rules";
 import { createOrderReceivables } from "@/services/service-order-billing.service";
 
 export class ReceivableError extends Error {
@@ -104,12 +104,22 @@ export async function receiveAccountReceivable(id: string, input: ReceiveInput) 
   const receivable = await prisma.accountReceivable.findUnique({ where: { id } });
   if (!receivable) throw new ReceivableError("Conta a receber não encontrada.", 404);
   if (receivable.status === "RECEIVED") throw new ReceivableError("Esta conta já foi recebida.", 409);
+  if (receivable.status === "CANCELLED") throw new ReceivableError("Esta conta foi cancelada.", 409);
+
+  // Data em que foi recebido: a escolhida no formulário ou, se não informada, agora.
+  let receivedAt: Date;
+  try {
+    receivedAt = parseSettlementDate(input.receivedAt);
+  } catch (err) {
+    if (err instanceof SettlementDateError) throw new ReceivableError(err.message, 400);
+    throw err;
+  }
 
   return prisma.accountReceivable.update({
     where: { id },
     data: {
       status: "RECEIVED",
-      receivedAt: input.receivedAt ? new Date(input.receivedAt) : new Date(),
+      receivedAt,
       receivedAmount: input.receivedAmount ?? receivable.amount,
       bankAccountId: input.bankAccountId ?? receivable.bankAccountId,
       paymentMethod: input.paymentMethod ?? receivable.paymentMethod,

@@ -1,6 +1,23 @@
 // Regras puras (sem banco) do financeiro — compartilhadas entre rotas e
 // serviços, e cobertas por testes em finance-rules.test.ts.
 
+/**
+ * Data em que a conta foi efetivamente paga/recebida (formulários "Pagar"/"Receber"):
+ * sem data → agora; só a data ("2026-10-05") → meio-dia desse dia (meia-noite UTC
+ * apareceria como o dia anterior no horário de Brasília). Recusa data inválida ou futura.
+ */
+export function parseSettlementDate(value: string | undefined, now = new Date()): Date {
+  if (!value) return now;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T12:00:00`) : new Date(value);
+  if (Number.isNaN(date.getTime())) throw new SettlementDateError("Data de pagamento inválida.");
+  const endOfToday = new Date(now);
+  endOfToday.setHours(23, 59, 59, 999);
+  if (date > endOfToday) throw new SettlementDateError("A data do pagamento não pode ser no futuro.");
+  return date;
+}
+
+export class SettlementDateError extends Error {}
+
 /** Arredonda pra centavos sem o erro clássico de float (ex.: 1.005 -> 1.01). */
 export function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;

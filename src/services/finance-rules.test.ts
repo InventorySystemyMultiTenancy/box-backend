@@ -1,5 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { isDuplicatedOrderIncome, orderBillingTotal, roundMoney, splitInstallments } from "@/services/finance-rules";
+import { isDuplicatedOrderIncome, orderBillingTotal, parseSettlementDate, roundMoney, SettlementDateError, splitInstallments } from "@/services/finance-rules";
+
+describe("parseSettlementDate", () => {
+  const now = new Date(2026, 9, 7, 15, 30);
+
+  it("sem data usa o momento atual", () => {
+    expect(parseSettlementDate(undefined, now)).toBe(now);
+  });
+
+  it("data escolhida fica ao meio-dia (não vira o dia anterior no fuso de Brasília)", () => {
+    const d = parseSettlementDate("2026-10-03", now);
+    expect([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()]).toEqual([2026, 9, 3, 12]);
+  });
+
+  it("aceita hoje e recusa data futura ou inválida", () => {
+    expect(parseSettlementDate("2026-10-07", now).getDate()).toBe(7);
+    expect(() => parseSettlementDate("2026-10-08", now)).toThrow(SettlementDateError);
+    expect(() => parseSettlementDate("não é data", now)).toThrow(SettlementDateError);
+  });
+});
 
 describe("roundMoney", () => {
   it("arredonda para centavos sem erro de float", () => {

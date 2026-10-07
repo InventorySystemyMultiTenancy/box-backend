@@ -1,8 +1,9 @@
 import { randomUUID } from "crypto";
 import { prisma, AppTx } from "@/lib/prisma";
 import { parsePageParams, paginated } from "@/lib/pagination";
-import { roundMoney, splitInstallments } from "@/services/finance-rules";
+import { parseSettlementDate, roundMoney, SettlementDateError, splitInstallments } from "@/services/finance-rules";
 import { normalizeClassification, rememberExpenseClassification } from "@/services/expense-classifications.service";
+import { endOfPeriod } from "@/services/cash-flow.service";
 
 export class PayableError extends Error {
   constructor(message: string, public status: number) {
@@ -152,9 +153,14 @@ export async function createAccountsPayable(input: AccountPayableInput, tx?: App
 export async function listAccountsPayable(query: Record<string, unknown>) {
   const pageParams = parsePageParams(query);
   const status = typeof query.status === "string" ? query.status : undefined;
+  // Separação rápida: "open" = a pagar (pendente/vencida), "paid" = pagas.
+  const situation = query.situation === "open" || query.situation === "paid" ? query.situation : undefined;
   const category = typeof query.category === "string" ? query.category : undefined;
-  const from = typeof query.from === "string" ? new Date(query.from) : undefined;
-  const to = typeof query.to === "string" ? new Date(query.to) : undefined;
+  const from = typeof query.from === "string" && query.from ? new Date(query.from) : undefined;
+  // "até" só com data inclui o dia inteiro.
+  const to = typeof query.to === "string" && query.to ? endOfPeriod(query.to) : undefined;
+  // O período filtra pelo vencimento (padrão) ou pela data em que foi pago.
+  const dateField = query.dateField === "paidAt" ? "paidAt" : "dueDate";
   // "Nome" = fornecedor/beneficiário (payeeName); "número de nota" busca pela nota
   // fiscal ligada (Invoice.number) — nem toda conta a pagar tem uma nota vinculada.
   const payeeName = typeof query.payeeName === "string" && query.payeeName.trim() ? query.payeeName.trim() : undefined;
@@ -166,11 +172,11 @@ export async function listAccountsPayable(query: Record<string, unknown>) {
   await markOverduePayables();
 
   const where = {
-    ...(status ? { status } : {}),
+    ...(status ? { status } : situation === "open" ? { status: { in: ["PENDING", "OVERDUE"] } } : situation === "paid" ? { status: "PAID" } : {}),
     ...(category ? { category } : {}),
     ...(sector ? { expenseSector: sector } : {}),
     ...(group ? { expenseGroup: group } : {}),
-    ...(from || to ? { dueDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+    ...(from || to ? { [dateField]: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
     ...(payeeName ? { payeeName: { contains: payeeName, mode: "insensitive" as const } } : {}),
     // Nº da nota digitado na própria conta ou o da nota fiscal ligada.
     ...(invoiceNumber
@@ -192,7 +198,8 @@ export async function listAccountsPayable(query: Record<string, unknown>) {
         createdBy: { select: { id: true, name: true } },
         store: { select: { id: true, name: true } },
       },
-      orderBy: { dueDate: "asc" },
+      // Pagas: as mais recentes primeiro; em aberto: o que vence antes primeiro.
+      orderBy: situation === "paid" || dateField === "paidAt" ? { paidAt: "desc" } : { dueDate: "asc" },
       skip: pageParams.skip,
       take: pageParams.take,
     }),
@@ -208,12 +215,21 @@ export async function payAccountPayable(id: string, input: PayInput) {
   if (payable.status === "PAID") throw new PayableError("Esta conta já está paga.", 409);
   if (payable.status === "CANCELLED") throw new PayableError("Esta conta foi cancelada.", 409);
 
+  // Data em que foi pago: a escolhida no formulário ou, se não informada, agora.
+  let paidAt: Date;
+  try {
+    paidAt = parseSettlementDate(input.paidAt);
+  } catch (err) {
+    if (err instanceof SettlementDateError) throw new PayableError(err.message, 400);
+    throw err;
+  }
+
   const [paid] = await prisma.$transaction([
     prisma.accountPayable.update({
       where: { id },
       data: {
         status: "PAID",
-        paidAt: input.paidAt ? new Date(input.paidAt) : new Date(),
+        paidAt,
         paidAmount: input.paidAmount ?? payable.amount,
         bankAccountId: input.bankAccountId ?? payable.bankAccountId,
         paymentMethod: input.paymentMethod ?? payable.paymentMethod,
