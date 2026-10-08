@@ -15,8 +15,12 @@ function hashToken(token: string) {
  * (quem chama não deve revelar se a conta existe). Só o hash do token fica no banco.
  */
 export async function requestPasswordReset(email: string) {
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user || !user.active) return;
+  // Sem diferenciar maiúsculas/minúsculas nem espaços: "Fulano@Gmail.com " acha "fulano@gmail.com".
+  const user = await prisma.user.findFirst({ where: { email: { equals: email.trim(), mode: "insensitive" } } });
+  if (!user || !user.active) {
+    console.info("[esqueci minha senha] e-mail não cadastrado ou conta desativada — nada enviado.");
+    return;
+  }
 
   const token = crypto.randomBytes(32).toString("hex");
   await prisma.$transaction([
