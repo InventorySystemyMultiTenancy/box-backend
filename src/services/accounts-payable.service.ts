@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { prisma, AppTx, toNumber } from "@/lib/prisma";
-import { parsePageParams, paginated } from "@/lib/pagination";
+import { pageAcrossSegments, parsePageParams, paginated } from "@/lib/pagination";
 import { parseSettlementDate, roundMoney, SettlementDateError, splitInstallments, summarizeSettlementGroups } from "@/services/finance-rules";
 import { normalizeClassification, rememberExpenseClassification } from "@/services/expense-classifications.service";
 import { endOfPeriod } from "@/services/cash-flow.service";
@@ -267,15 +267,36 @@ export async function listAccountsPayable(query: Record<string, unknown>) {
     ...(status ? { status } : situation === "open" ? { status: { in: ["PENDING", "OVERDUE"] } } : situation === "paid" ? { status: "PAID" } : {}),
   };
 
+  const include = {
+    bankAccount: true,
+    invoice: { select: { id: true, number: true } },
+    createdBy: { select: { id: true, name: true } },
+    store: { select: { id: true, name: true } },
+  };
+
+  // Lista geral (sem filtro de situação): vencidas e as mais próximas do vencimento no topo,
+  // depois pagas/canceladas (as de vencimento mais recente primeiro).
+  if (!status && !situation && dateField !== "paidAt") {
+    const open = { ...where, status: { in: ["PENDING", "OVERDUE"] } };
+    const closed = { ...where, status: { notIn: ["PENDING", "OVERDUE"] } };
+    const { items, total } = await pageAcrossSegments(
+      pageParams,
+      {
+        count: () => prisma.accountPayable.count({ where: open }),
+        find: (skip, take) => prisma.accountPayable.findMany({ where: open, include, orderBy: { dueDate: "asc" }, skip, take }),
+      },
+      {
+        count: () => prisma.accountPayable.count({ where: closed }),
+        find: (skip, take) => prisma.accountPayable.findMany({ where: closed, include, orderBy: { dueDate: "desc" }, skip, take }),
+      }
+    );
+    return paginated(items, total, pageParams);
+  }
+
   const [items, total] = await Promise.all([
     prisma.accountPayable.findMany({
       where,
-      include: {
-        bankAccount: true,
-        invoice: { select: { id: true, number: true } },
-        createdBy: { select: { id: true, name: true } },
-        store: { select: { id: true, name: true } },
-      },
+      include,
       // Pagas: as mais recentes primeiro; em aberto: o que vence antes primeiro.
       orderBy: situation === "paid" || dateField === "paidAt" ? { paidAt: "desc" } : { dueDate: "asc" },
       skip: pageParams.skip,

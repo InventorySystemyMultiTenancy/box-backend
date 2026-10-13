@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { prisma, toNumber } from "@/lib/prisma";
-import { parsePageParams, paginated } from "@/lib/pagination";
+import { pageAcrossSegments, parsePageParams, paginated } from "@/lib/pagination";
 import { parseSettlementDate, SettlementDateError, splitInstallments, summarizeSettlementGroups } from "@/services/finance-rules";
 import { endOfPeriod } from "@/services/cash-flow.service";
 import { createOrderReceivables } from "@/services/service-order-billing.service";
@@ -119,10 +119,31 @@ export async function listAccountsReceivable(query: Record<string, unknown>) {
     ...(status ? { status } : {}),
   };
 
+  const include = { bankAccount: true, client: true, serviceOrder: { select: { id: true, code: true } } };
+
+  // Sem filtro de status: vencidas e as mais próximas do vencimento no topo,
+  // depois recebidas/canceladas (as de vencimento mais recente primeiro).
+  if (!status) {
+    const open = { ...where, status: { in: ["PENDING", "OVERDUE"] } };
+    const closed = { ...where, status: { notIn: ["PENDING", "OVERDUE"] } };
+    const { items, total } = await pageAcrossSegments(
+      pageParams,
+      {
+        count: () => prisma.accountReceivable.count({ where: open }),
+        find: (skip, take) => prisma.accountReceivable.findMany({ where: open, include, orderBy: { dueDate: "asc" }, skip, take }),
+      },
+      {
+        count: () => prisma.accountReceivable.count({ where: closed }),
+        find: (skip, take) => prisma.accountReceivable.findMany({ where: closed, include, orderBy: { dueDate: "desc" }, skip, take }),
+      }
+    );
+    return paginated(items, total, pageParams);
+  }
+
   const [items, total] = await Promise.all([
     prisma.accountReceivable.findMany({
       where,
-      include: { bankAccount: true, client: true, serviceOrder: { select: { id: true, code: true } } },
+      include,
       orderBy: { dueDate: "asc" },
       skip: pageParams.skip,
       take: pageParams.take,
