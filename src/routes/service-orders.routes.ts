@@ -197,7 +197,7 @@ serviceOrdersRouter.post(
   "/:id/damage-photos",
   requireAuth,
   requireRole("MECHANIC", "ADMIN"),
-  upload.array("photos", 15),
+  upload.array("photos", 20),
   async (req: AuthedRequest<{ id: string }>, res) => {
     const order = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
     if (!order) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
