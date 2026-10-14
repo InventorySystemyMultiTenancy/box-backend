@@ -7,6 +7,7 @@ import { upload } from "@/middleware/upload";
 import { canSeeAlertType, canSeeSection, getReportAccess } from "@/lib/report-access";
 import { getVehicleHistory, listRevisionAlerts, VehicleHistoryError } from "@/services/vehicle-history.service";
 import { recognizeVehicleFromImage, VehicleRecognitionError } from "@/services/vehicle-recognition.service";
+import { lookupPlate, normalizePlate } from "@/services/plate-lookup.service";
 
 export const vehiclesRouter = Router();
 
@@ -24,7 +25,9 @@ vehiclesRouter.get("/revision-alerts", requireAuth, requireRole("MECHANIC", "ADM
 
 // Foto do veículo lida por IA (marca/modelo/placa + danos visíveis) — usado ao abrir
 // um novo projeto sem solicitação prévia. Não grava nada, só devolve os dados lidos
-// para o admin conferir/editar antes de cadastrar; a imagem em si não é retida.
+// para o admin conferir/editar antes de cadastrar; a imagem em si não é retida. Com placa
+// legível, consulta a placa na base externa (plate-lookup.service) e os dados de lá
+// (marca/modelo/ano/cor) prevalecem sobre o palpite da IA, que é só pela aparência.
 vehiclesRouter.post(
   "/recognize",
   requireAuth,
@@ -34,7 +37,20 @@ vehiclesRouter.post(
     if (!req.file) return res.status(400).json({ error: "Envie uma foto do veículo." });
 
     try {
-      const recognized = await recognizeVehicleFromImage(req.file.path, req.file.mimetype);
+      const ai = await recognizeVehicleFromImage(req.file.path, req.file.mimetype);
+      const plate = normalizePlate(ai.plate);
+      const lookup = plate ? await lookupPlate(plate) : { status: "INVALID_PLATE" as const, result: null };
+      const found = lookup.result;
+      const recognized = {
+        ...ai,
+        plate: plate ?? ai.plate,
+        brand: found?.brand ?? ai.brand,
+        model: found?.model ?? ai.model,
+        year: found?.modelYear ?? found?.year ?? ai.year,
+        color: found?.color ?? ai.color,
+        plateLookupStatus: lookup.status,
+        plateLookup: found,
+      };
       res.json({ recognized });
     } catch (err) {
       if (err instanceof VehicleRecognitionError) return res.status(err.status).json({ error: err.message });
@@ -44,6 +60,12 @@ vehiclesRouter.post(
     }
   }
 );
+
+// Consulta de placa digitada à mão (botão "Consultar placa" do novo projeto).
+vehiclesRouter.get("/plate/:plate", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ plate: string }>, res) => {
+  const lookup = await lookupPlate(req.params.plate);
+  res.json({ status: lookup.status, result: lookup.result });
+});
 
 vehiclesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const isStaff = req.user!.role === "MECHANIC" || req.user!.role === "ADMIN";
