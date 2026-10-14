@@ -1,4 +1,5 @@
 import fs from "fs";
+import { isAiSupportedImage, UNSUPPORTED_AI_IMAGE_MESSAGE } from "@/lib/ai-image";
 
 export class InvoiceOcrError extends Error {
   constructor(message: string, public status: number) {
@@ -55,6 +56,8 @@ export async function extractInvoiceFromImage(filePath: string, mimetype: string
   if (!apiKey) {
     throw new InvoiceOcrError("Leitura automática por IA não configurada (defina OPENAI_API_KEY no ambiente).", 501);
   }
+
+  if (!isAiSupportedImage(mimetype)) throw new InvoiceOcrError(UNSUPPORTED_AI_IMAGE_MESSAGE, 415);
 
   const buffer = await fs.promises.readFile(filePath);
   const dataUrl = `data:${mimetype};base64,${buffer.toString("base64")}`;

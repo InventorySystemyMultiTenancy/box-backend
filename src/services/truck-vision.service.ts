@@ -1,4 +1,5 @@
 import fs from "fs";
+import { isAiSupportedImage, UNSUPPORTED_AI_IMAGE_MESSAGE } from "@/lib/ai-image";
 
 export class TruckVisionError extends Error {
   constructor(message: string, public status: number) {
@@ -28,6 +29,8 @@ async function callVisionModel(filePath: string, mimetype: string, systemPrompt:
   if (!apiKey) {
     throw new TruckVisionError("Leitura automática por IA não configurada (defina OPENAI_API_KEY no ambiente).", 501);
   }
+
+  if (!isAiSupportedImage(mimetype)) throw new TruckVisionError(UNSUPPORTED_AI_IMAGE_MESSAGE, 415);
 
   const buffer = await fs.promises.readFile(filePath);
   const dataUrl = `data:${mimetype};base64,${buffer.toString("base64")}`;

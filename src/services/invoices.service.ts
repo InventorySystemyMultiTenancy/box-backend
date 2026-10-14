@@ -39,9 +39,10 @@ export interface InvoiceInput {
   discountAmount?: number;
   taxAmount?: number;
   issueDate?: string;
-  // Só usados quando paymentMethod é "boleto" — geram N contas a pagar em meses
-  // consecutivos a partir de dueDate (ver services/accounts-payable.service.ts).
+  // Só usados quando é nota de despesa ou paga por boleto — geram N contas a pagar a
+  // partir de dueDate, a cada installmentIntervalDays dias (ou mês a mês, se não vier).
   installments?: number;
+  installmentIntervalDays?: number;
   dueDate?: string;
 }
 
@@ -119,7 +120,7 @@ export async function listInvoices(query: Record<string, unknown>) {
 // Se `number` vier preenchido, a nota já existe fisicamente (digitada ou lida de uma
 // foto) — nasce ISSUED. Caso contrário, nasce DRAFT para ser emitida depois via /issue.
 // Nota de despesa (isExpense) ou paga por boleto também gera as parcelas como contas a
-// pagar (uma por mês, a partir de dueDate), ligadas a esta nota e com a mesma
+// pagar (a cada N dias ou mês a mês, a partir de dueDate), ligadas a esta nota e com a mesma
 // classificação (categoria = natureza da operação, grupo, descrição, setor) e banco.
 export async function createInvoiceDraft(input: InvoiceInput) {
   const generatesPayables = Boolean(input.isExpense) || isBoleto(input.paymentMethod);
@@ -178,6 +179,7 @@ export async function createInvoiceDraft(input: InvoiceInput) {
           paymentMethod: input.paymentMethod,
           bankAccountId: input.bankAccountId || undefined,
           installments: input.installments,
+          installmentIntervalDays: input.installmentIntervalDays,
           invoiceNumber: input.number,
           issueDate: input.issueDate,
           createdById: input.createdById,

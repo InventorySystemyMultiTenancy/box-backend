@@ -1,4 +1,5 @@
 import fs from "fs";
+import { isAiSupportedImage, UNSUPPORTED_AI_IMAGE_MESSAGE } from "@/lib/ai-image";
 
 export class VehicleRecognitionError extends Error {
   constructor(message: string, public status: number) {
@@ -49,6 +50,8 @@ export async function recognizeVehicleFromImage(filePath: string, mimetype: stri
   if (!apiKey) {
     throw new VehicleRecognitionError("Leitura automática por IA não configurada (defina OPENAI_API_KEY no ambiente).", 501);
   }
+
+  if (!isAiSupportedImage(mimetype)) throw new VehicleRecognitionError(UNSUPPORTED_AI_IMAGE_MESSAGE, 415);
 
   const buffer = await fs.promises.readFile(filePath);
   const dataUrl = `data:${mimetype};base64,${buffer.toString("base64")}`;

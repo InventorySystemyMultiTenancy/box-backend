@@ -42,6 +42,8 @@ export interface AccountPayableInput {
   amount?: number;
   dueDate?: string;
   installments?: number;
+  // Dias entre uma parcela e outra; sem ele, mês a mês.
+  installmentIntervalDays?: number;
   // ...ou as duplicatas digitadas uma a uma (vencimento/valor de cada).
   duplicates?: PayableDuplicateInput[];
   // Preenchido quando as parcelas nascem de uma nota fiscal de despesa (ver
@@ -140,7 +142,7 @@ export async function createAccountsPayable(input: AccountPayableInput, tx?: App
     input.duplicates && input.duplicates.length > 0
       ? input.duplicates
       : input.amount !== undefined && input.dueDate
-        ? splitInstallments(input.amount, input.installments ?? 1, new Date(input.dueDate)).map((p) => ({
+        ? splitInstallments(input.amount, input.installments ?? 1, new Date(input.dueDate), input.installmentIntervalDays).map((p) => ({
             dueDate: p.dueDate.toISOString(),
             amount: p.amount,
           }))

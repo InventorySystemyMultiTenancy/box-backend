@@ -57,14 +57,20 @@ export interface Installment {
   dueDate: Date;
 }
 
-/** Divide um valor em parcelas mensais exatas em centavos — a diferença de arredondamento vai na última. */
-export function splitInstallments(amount: number, count: number, firstDueDate: Date): Installment[] {
+/**
+ * Divide um valor em parcelas exatas em centavos — a diferença de arredondamento vai na
+ * última. Sem `intervalDays`, as parcelas vencem mês a mês (mesmo dia do mês); com ele,
+ * a cada N dias a partir do primeiro vencimento (ex.: boleto 30/60/90 ou 28/56/84).
+ */
+export function splitInstallments(amount: number, count: number, firstDueDate: Date, intervalDays?: number): Installment[] {
   const total = Math.max(1, Math.floor(count));
   const totalCents = Math.round(amount * 100);
   const baseCents = Math.floor(totalCents / total);
+  const days = intervalDays && intervalDays > 0 ? Math.floor(intervalDays) : null;
   return Array.from({ length: total }, (_, i) => {
     const dueDate = new Date(firstDueDate);
-    dueDate.setMonth(dueDate.getMonth() + i);
+    if (days) dueDate.setDate(dueDate.getDate() + i * days);
+    else dueDate.setMonth(dueDate.getMonth() + i);
     const cents = i === total - 1 ? totalCents - baseCents * (total - 1) : baseCents;
     return { number: i + 1, amount: cents / 100, dueDate };
   });

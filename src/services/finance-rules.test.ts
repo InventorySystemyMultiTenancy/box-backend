@@ -75,6 +75,15 @@ describe("splitInstallments", () => {
     expect(parts.every((p) => p.dueDate.getDate() === 10)).toBe(true);
   });
 
+  it("com intervalo em dias, vence a cada N dias a partir da primeira data", () => {
+    const parts = splitInstallments(90, 3, new Date(2026, 0, 10), 28);
+    expect(parts.map((p) => p.dueDate.toDateString())).toEqual([
+      new Date(2026, 0, 10).toDateString(),
+      new Date(2026, 1, 7).toDateString(),
+      new Date(2026, 2, 7).toDateString(),
+    ]);
+  });
+
   it("quantidade inválida vira 1 parcela", () => {
     expect(splitInstallments(50, 0, new Date())).toHaveLength(1);
   });

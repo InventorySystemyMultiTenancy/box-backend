@@ -68,6 +68,7 @@ const createSchema = z.object({
   // Só usados quando paymentMethod é "boleto" — geram as contas a pagar (uma por
   // mês) a partir de dueDate, ligadas a esta nota.
   installments: z.coerce.number().int().min(1).max(60).optional(),
+  installmentIntervalDays: z.coerce.number().int().min(1).max(365).optional(),
   dueDate: z.string().optional(),
 });
 
