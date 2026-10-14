@@ -62,6 +62,7 @@ model User {
   truckRefuelings             TruckRefueling[]        @relation("TruckRefuelingDriver")
   createdShareLinks           ServiceOrderShareLink[]
   payablesCreated             AccountPayable[]        @relation("AccountPayableCreatedBy")
+  serviceOrderAssignments     ServiceOrderAssignee[]  @relation("ServiceOrderAssignee")
 }
 
 // "Esqueci minha senha" — só o hash do token fica salvo (o token em si vai no link do
@@ -643,10 +644,26 @@ model ServiceOrder {
   vehicleDamages     VehicleDamage[]
   timeEntries        TimeEntry[]
   shareLink          ServiceOrderShareLink?
+  assignees          ServiceOrderAssignee[]
 
   @@index([vehicleId])
   @@index([status, archivedAt])
   @@index([createdAt])
+}
+
+// Funcionários associados ao projeto (pelo admin; quem cria o projeto entra sozinho). O
+// funcionário não-admin só enxerga os projetos em que está associado — ver
+// canAccessServiceOrder e serviceOrderVisibilityFilter em lib/authorization.ts.
+model ServiceOrderAssignee {
+  id             String       @id @default(cuid())
+  serviceOrderId String
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation("ServiceOrderAssignee", fields: [userId], references: [id])
+  createdAt      DateTime     @default(now())
+
+  @@unique([serviceOrderId, userId])
+  @@index([userId])
 }
 
 // Link público de acompanhamento (aba do projeto → "Compartilhar") — deixa o cliente ver

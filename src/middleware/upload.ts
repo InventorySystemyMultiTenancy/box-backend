@@ -51,8 +51,17 @@ function hasCloudinaryConfig() {
 }
 
 export async function persistUploadedFile(file: Express.Multer.File) {
+  return persistLocalFile(file.path, file.filename, file.mimetype);
+}
+
+/**
+ * Publica um arquivo já gravado em UPLOADS_DIR: sobe pro Cloudinary (e apaga a cópia
+ * local) quando configurado, senão serve direto de /uploads. Também usado por arquivos
+ * gerados pelo próprio servidor (ex.: PDF de finalização do serviço).
+ */
+export async function persistLocalFile(filePath: string, filename: string, mimetype?: string) {
   if (!hasCloudinaryConfig()) {
-    return `/uploads/${file.filename}`;
+    return `/uploads/${filename}`;
   }
 
   cloudinary.config({
@@ -61,12 +70,16 @@ export async function persistUploadedFile(file: Express.Multer.File) {
     api_secret: process.env.CLOUDINARY_API_SECRET,
   });
 
-  const result = await cloudinary.uploader.upload(file.path, {
+  // PDF vai como "raw": enviado como imagem ("auto"), a conta gratuita do Cloudinary
+  // bloqueia a entrega de PDF por padrão e o link abre com erro 401.
+  const isPdf = mimetype === "application/pdf";
+  const result = await cloudinary.uploader.upload(filePath, {
     folder: process.env.CLOUDINARY_FOLDER || "box-diagnosticos",
-    resource_type: "auto",
+    resource_type: isPdf ? "raw" : "auto",
+    ...(isPdf ? { public_id: filename } : {}),
   });
 
-  fs.promises.unlink(file.path).catch(() => {});
+  fs.promises.unlink(filePath).catch(() => {});
   return result.secure_url;
 }
 

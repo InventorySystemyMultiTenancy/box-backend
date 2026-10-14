@@ -5,6 +5,8 @@ import { MulterError } from "multer";
 import { Prisma } from "@prisma/client";
 import { UploadTypeError } from "@/middleware/upload";
 import { HttpError } from "@/lib/http-error";
+import { requireAuth } from "@/middleware/auth";
+import { requireServiceOrderAccess } from "@/lib/authorization";
 import { authRouter } from "@/routes/auth.routes";
 import { vehiclesRouter } from "@/routes/vehicles.routes";
 import { serviceOrdersRouter } from "@/routes/service-orders.routes";
@@ -66,6 +68,9 @@ app.get("/health", (_req, res) => res.json({ ok: true, service: "box-backend" })
 app.use("/api/auth", authRouter);
 app.use("/api/team", teamRouter);
 app.use("/api/vehicles", vehiclesRouter);
+// Funcionário só mexe nos projetos em que está associado (admin em todos; cliente nos dele)
+// — vale para toda rota com o id da OS no caminho, incluindo os routers aninhados abaixo.
+app.use("/api/service-orders/:orderId", requireAuth, requireServiceOrderAccess);
 app.use("/api/service-orders", serviceOrdersRouter);
 app.use("/api/service-orders/:orderId/timeline", timelineRouter);
 app.use("/api/service-orders/:orderId/parts", partsRouter);

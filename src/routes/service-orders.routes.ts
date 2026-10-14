@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
-import { canAccessServiceOrder } from "@/lib/authorization";
+import { canAccessServiceOrder, serviceOrderVisibilityFilter } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
 import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS, SERVICE_ORDER_PRIORITIES, RETIRED_SERVICE_ORDER_STATUSES } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
@@ -12,6 +12,7 @@ import { recordAudit } from "@/services/audit.service";
 import { createOrGetShareLink, revokeShareLink, getActiveShareLink, ShareLinkError } from "@/services/share-link.service";
 import { createOrderReceivables, orderAlreadyBilled } from "@/services/service-order-billing.service";
 import { clearServiceOrderAlerts } from "@/services/alerts.service";
+import { saveServiceOrderReportPdf } from "@/services/service-order-report.service";
 export const serviceOrdersRouter = Router();
 
 const orderInclude = {
@@ -31,6 +32,7 @@ const orderInclude = {
   technician: { select: { id: true, name: true } },
   currentSector: true,
   insuranceCompany: true,
+  assignees: { orderBy: { createdAt: "asc" as const }, include: { user: { select: { id: true, name: true } } } },
 };
 
 function hidePricesForMechanic<T extends { approvals?: any[]; estimatedMin?: number | null; estimatedMax?: number | null; deliveryExtraValue?: number | null }>(order: T, role: string): T {
@@ -68,6 +70,7 @@ const orderListInclude = {
   technician: { select: { id: true, name: true } },
   currentSector: true,
   insuranceCompany: true,
+  assignees: { orderBy: { createdAt: "asc" as const }, include: { user: { select: { id: true, name: true } } } },
 };
 
 const HISTORY_STATUSES = ["FINISHED", "READY_FOR_PICKUP"];
@@ -84,7 +87,8 @@ serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
 
   const where = {
-    ...(isStaff ? {} : { vehicle: { ownerId: req.user!.id } }),
+    // Admin vê todos; funcionário só os projetos associados a ele; cliente só os dele.
+    ...serviceOrderVisibilityFilter(req.user!.id, req.user!.role),
     // Projeto com baixa dada some da lista/kanban de projetos em andamento (staff),
     // mas segue acessível por GET /:id, histórico do cliente e busca — nunca é apagado.
     ...(history
@@ -140,17 +144,36 @@ const createOrderSchema = z.object({
   scheduledAt: z.string().datetime().optional(),
   storeId: z.string().optional(),
   priority: z.enum(SERVICE_ORDER_PRIORITIES).optional(),
+  // Funcionários associados já na criação (só o admin escolhe; quem cria entra sozinho).
+  assigneeIds: z.array(z.string()).optional(),
 });
+
+/** Só funcionários ativos (mecânico/admin) podem ser associados a um projeto. */
+async function validStaffIds(ids: string[]) {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return [];
+  const users = await prisma.user.findMany({
+    where: { id: { in: unique }, active: true, role: { in: ["MECHANIC", "ADMIN"] } },
+    select: { id: true },
+  });
+  return users.length === unique.length ? unique : null;
+}
 
 serviceOrdersRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
   const parsed = createOrderSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+  // Quem cria (funcionário) já fica associado — senão o próprio projeto sumiria da lista dele.
+  const requested = req.user!.role === "ADMIN" ? (parsed.data.assigneeIds ?? []) : [];
+  const assigneeIds = await validStaffIds(req.user!.role === "MECHANIC" ? [req.user!.id, ...requested] : requested);
+  if (!assigneeIds) return res.status(400).json({ error: "Funcionário inválido na associação do projeto." });
 
   const code = await nextOrderCode();
   const order = await prisma.serviceOrder.create({
     data: {
       code,
       vehicleId: parsed.data.vehicleId,
+      assignees: { create: assigneeIds.map((userId) => ({ userId })) },
       estimatedMin: parsed.data.estimatedMin,
       estimatedMax: parsed.data.estimatedMax,
       scheduledAt: parsed.data.scheduledAt ? new Date(parsed.data.scheduledAt) : undefined,
@@ -262,6 +285,59 @@ serviceOrdersRouter.delete("/:id/share-link", requireAuth, requireRole("MECHANIC
     if (err instanceof ShareLinkError) return res.status(err.status).json({ error: err.message });
     throw err;
   }
+});
+
+const assigneesSchema = z.object({ userIds: z.array(z.string()) });
+
+// Admin define quais funcionários estão associados ao projeto (vários ao mesmo tempo).
+// Substitui a lista inteira; funcionário não-admin só enxerga projetos em que está nela.
+serviceOrdersRouter.put("/:id/assignees", requireAuth, requireRole("ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = assigneesSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+  const existing = await prisma.serviceOrder.findUnique({ where: { id: req.params.id }, include: { assignees: true } });
+  if (!existing) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+
+  const userIds = await validStaffIds(parsed.data.userIds);
+  if (!userIds) return res.status(400).json({ error: "Só é possível associar funcionários ativos." });
+
+  const before = existing.assignees.map((a) => a.userId);
+  const added = userIds.filter((id) => !before.includes(id));
+  const removed = before.filter((id) => !userIds.includes(id));
+
+  const assignees = await prisma.$transaction(async (tx) => {
+    await tx.serviceOrderAssignee.deleteMany({ where: { serviceOrderId: existing.id, userId: { in: removed } } });
+    await tx.serviceOrderAssignee.createMany({ data: added.map((userId) => ({ serviceOrderId: existing.id, userId })) });
+    const assignees = await tx.serviceOrderAssignee.findMany({
+      where: { serviceOrderId: existing.id },
+      orderBy: { createdAt: "asc" },
+      include: { user: { select: { id: true, name: true } } },
+    });
+    if (added.length || removed.length) {
+      await tx.timelineEvent.create({
+        data: {
+          serviceOrderId: existing.id,
+          title: "Funcionários do projeto atualizados",
+          description: assignees.length ? assignees.map((a) => a.user.name).join(", ") : "Nenhum funcionário associado",
+          authorId: req.user!.id,
+        },
+      });
+    }
+    return assignees;
+  });
+
+  if (added.length || removed.length) {
+    await recordAudit({
+      userId: req.user!.id,
+      action: "UPDATE",
+      entity: "ServiceOrderAssignee",
+      entityId: existing.id,
+      before: { userIds: before },
+      after: { userIds },
+    });
+    emitToOrder(existing.id, "timeline:new", {});
+  }
+  res.json({ assignees });
 });
 
 const processSchema = z.object({
@@ -499,11 +575,21 @@ serviceOrdersRouter.patch(
       // Projeto entregue não é mais pendência — alertas dele saem da aba Alertas.
       await clearServiceOrderAlerts(tx, order.id);
 
-      return tx.serviceOrder.findUnique({ where: { id: order.id }, include: orderInclude });
+      return order;
     });
 
-    emitToOrder(order!.id, "status:update", { orderId: order!.id, status: order!.status, progress: order!.progress });
-    res.json({ order });
+    // PDF de finalização (vai no WhatsApp da entrega). Falhar aqui não desfaz a entrega —
+    // o admin ainda consegue o PDF pelo botão "Baixar PDF do projeto".
+    let reportUrl: string | null = null;
+    try {
+      reportUrl = (await saveServiceOrderReportPdf(order.id)).url;
+    } catch (err) {
+      console.error("Falha ao gerar o PDF de finalização", err);
+    }
+
+    const finalized = await prisma.serviceOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
+    emitToOrder(finalized.id, "status:update", { orderId: finalized.id, status: finalized.status, progress: finalized.progress });
+    res.json({ order: finalized, reportUrl });
   }
 );
 

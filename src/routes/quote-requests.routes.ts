@@ -162,6 +162,8 @@ quoteRequestsRouter.patch(
           progress: STATUS_PROGRESS.SCHEDULED,
           estimatedMin: initialValue,
           scheduledAt: scheduledDate,
+          // Funcionário que aceitou já fica associado ao projeto (admin enxerga todos).
+          ...(req.user!.role === "MECHANIC" ? { assignees: { create: { userId: req.user!.id } } } : {}),
           timelineEvents: {
             create: {
               title: `Orçamento aceito por ${mechanic?.name ?? "a oficina"}`,

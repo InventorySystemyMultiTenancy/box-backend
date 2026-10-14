@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
+import { serviceOrderVisibilityFilter } from "@/lib/authorization";
 import { getSearchAssistance, SearchAssistantError, SearchAssistTurn } from "@/services/search-assistant.service";
 import { transcribeAudio, SpeechToTextError } from "@/services/speech-to-text.service";
 import { upload } from "@/middleware/upload";
@@ -11,15 +12,18 @@ export const searchRouter = Router();
 // Busca global — cobre praticamente todo cadastro do sistema (OS, orçamentos,
 // usuários/clientes, veículos, fornecedores, peças, caminhões e
 // seguradoras), cada um com "contains" case-insensitive nos campos relevantes.
-searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req, res) => {
+searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const empty = { orders: [], estimates: [], users: [], vehicles: [], suppliers: [], parts: [], trucks: [], insuranceCompanies: [] };
   if (q.length < 2) return res.json(empty);
   const contains = { contains: q, mode: "insensitive" as const };
+  // Funcionário só encontra os projetos (e orçamentos deles) associados a ele.
+  const visibleOrders = serviceOrderVisibilityFilter(req.user!.id, req.user!.role);
 
   const [orders, estimates, users, vehicles, suppliers, parts, trucks, insuranceCompanies] = await Promise.all([
     prisma.serviceOrder.findMany({
       where: {
+        ...visibleOrders,
         OR: [
           { code: contains },
           { vehicle: { plate: contains } },
@@ -43,7 +47,7 @@ searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req,
       orderBy: { createdAt: "desc" },
     }),
     prisma.estimate.findMany({
-      where: { code: contains },
+      where: { code: contains, serviceOrder: visibleOrders },
       include: { serviceOrder: { include: { vehicle: true } } },
       take: 25,
       orderBy: { createdAt: "desc" },
