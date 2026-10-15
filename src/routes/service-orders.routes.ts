@@ -618,26 +618,31 @@ serviceOrdersRouter.patch("/:id/archive", requireAuth, requireRole("ADMIN"), asy
 });
 
 // Exclusão definitiva do projeto (diferente de "dar baixa", que só encerra e mantém o
-// histórico). Recusa se já existe qualquer rastro financeiro (comissão, nota fiscal,
-// conta a receber ou lançamento) — nesses casos o projeto já afeta a contabilidade da
-// oficina e não pode simplesmente sumir; use "Dar baixa" para encerrá-lo em vez disso.
-// Sem rastro financeiro, apaga em cascata tudo que só existe em função deste projeto
-// (timeline, peças, aprovações, mídia, chat, orçamentos formais, vistorias, avarias).
+// histórico). Projeto em andamento com rastro financeiro (comissão, nota fiscal, conta a
+// receber ou lançamento) é recusado — use "Dar baixa". Projeto já finalizado (finalizado,
+// pronto para retirada ou com baixa) pode ser excluído mesmo assim (ex.: projeto de
+// teste): o rastro financeiro dele sai junto. Saldos de banco são calculados a partir
+// dos lançamentos, então não ficam inconsistentes. Em todos os casos apaga em cascata
+// tudo que só existe em função deste projeto (timeline, peças, aprovações, mídia, chat,
+// orçamentos formais, vistorias, avarias).
 serviceOrdersRouter.delete("/:id", requireAuth, requireRole("ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
   const { id } = req.params;
   const existing = await prisma.serviceOrder.findUnique({ where: { id } });
   if (!existing) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
 
-  const [commissions, invoices, receivables, financialEntries] = await Promise.all([
-    prisma.commission.count({ where: { serviceOrderId: id } }),
-    prisma.invoice.count({ where: { serviceOrderId: id } }),
-    prisma.accountReceivable.count({ where: { serviceOrderId: id } }),
-    prisma.financialEntry.count({ where: { serviceOrderId: id } }),
-  ]);
-  if (commissions > 0 || invoices > 0 || receivables > 0 || financialEntries > 0) {
-    return res.status(409).json({
-      error: "Este projeto já tem comissão, nota fiscal, conta a receber ou lançamento financeiro vinculado — não pode ser excluído. Use \"Dar baixa\" para encerrá-lo.",
-    });
+  const finished = Boolean(existing.archivedAt) || HISTORY_STATUSES.includes(existing.status);
+  if (!finished) {
+    const [commissions, invoices, receivables, financialEntries] = await Promise.all([
+      prisma.commission.count({ where: { serviceOrderId: id } }),
+      prisma.invoice.count({ where: { serviceOrderId: id } }),
+      prisma.accountReceivable.count({ where: { serviceOrderId: id } }),
+      prisma.financialEntry.count({ where: { serviceOrderId: id } }),
+    ]);
+    if (commissions > 0 || invoices > 0 || receivables > 0 || financialEntries > 0) {
+      return res.status(409).json({
+        error: "Este projeto em andamento já tem comissão, nota fiscal, conta a receber ou lançamento financeiro vinculado — não pode ser excluído. Use \"Dar baixa\" para encerrá-lo; depois de finalizado, ele pode ser excluído definitivamente.",
+      });
+    }
   }
 
   await recordAudit({
@@ -655,6 +660,36 @@ serviceOrdersRouter.delete("/:id", requireAuth, requireRole("ADMIN"), async (req
     // Registros que existem por conta própria só perdem o vínculo com a OS (agenda pode
     // estar ligada a uma pilotagem de caminhão; apontamento de horas é do funcionário;
     // a solicitação de orçamento do cliente continua no histórico dele).
+    // Rastro financeiro (só existe aqui se o projeto já estava finalizado — ver acima).
+    // Comissão paga vira conta a pagar do mecânico: sai junto. Contas a pagar de nota de
+    // fornecedor ligada ao projeto ficam (dinheiro pago de verdade a terceiros), só
+    // perdem o vínculo com a nota apagada.
+    const commissions = await tx.commission.findMany({ where: { serviceOrderId: id }, select: { accountPayableId: true } });
+    const commissionPayableIds = commissions.map((c) => c.accountPayableId).filter((v): v is string => Boolean(v));
+    await tx.commission.deleteMany({ where: { serviceOrderId: id } });
+    if (commissionPayableIds.length) await tx.accountPayable.deleteMany({ where: { id: { in: commissionPayableIds } } });
+
+    const receivableIds = (await tx.accountReceivable.findMany({ where: { serviceOrderId: id }, select: { id: true } })).map((r) => r.id);
+    const invoiceIds = (
+      await tx.invoice.findMany({
+        where: { OR: [{ serviceOrderId: id }, ...(receivableIds.length ? [{ accountReceivableId: { in: receivableIds } }] : [])] },
+        select: { id: true },
+      })
+    ).map((i) => i.id);
+    if (invoiceIds.length) {
+      await tx.accountPayable.updateMany({ where: { invoiceId: { in: invoiceIds } }, data: { invoiceId: null } });
+      await tx.invoice.deleteMany({ where: { id: { in: invoiceIds } } });
+    }
+
+    const approvalIds = (await tx.approval.findMany({ where: { serviceOrderId: id }, select: { id: true } })).map((a) => a.id);
+    await tx.financialEntry.deleteMany({
+      where: { OR: [{ serviceOrderId: id }, ...(approvalIds.length ? [{ approvalId: { in: approvalIds } }, { partUsage: { approvalId: { in: approvalIds } } }] : [])] },
+    });
+    if (receivableIds.length) {
+      await tx.counterSale.updateMany({ where: { accountReceivableId: { in: receivableIds } }, data: { accountReceivableId: null } });
+      await tx.accountReceivable.deleteMany({ where: { id: { in: receivableIds } } });
+    }
+
     await tx.appointment.updateMany({ where: { serviceOrderId: id }, data: { serviceOrderId: null } });
     await tx.timeEntry.updateMany({ where: { serviceOrderId: id }, data: { serviceOrderId: null } });
     await tx.quoteRequest.updateMany({ where: { serviceOrderId: id }, data: { serviceOrderId: null } });
