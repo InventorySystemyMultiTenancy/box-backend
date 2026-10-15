@@ -8,6 +8,7 @@ import { canSeeAlertType, canSeeSection, getReportAccess } from "@/lib/report-ac
 import { getVehicleHistory, listRevisionAlerts, VehicleHistoryError } from "@/services/vehicle-history.service";
 import { recognizeVehicleFromImage, VehicleRecognitionError } from "@/services/vehicle-recognition.service";
 import { lookupPlate, normalizePlate } from "@/services/plate-lookup.service";
+import { recordAudit } from "@/services/audit.service";
 
 export const vehiclesRouter = Router();
 
@@ -114,7 +115,15 @@ vehiclesRouter.patch("/:id", requireAuth, requireRole("MECHANIC", "ADMIN"), asyn
   const existing = await prisma.vehicle.findUnique({ where: { id: req.params.id } });
   if (!existing) return res.status(404).json({ error: "Veículo não encontrado." });
 
+  // Funcionário (não-admin) só edita veículo de projeto em que está associado — mesma regra
+  // de acesso aos projetos. Corrigir placa/dados errados é feito de dentro do projeto.
+  if (req.user!.role === "MECHANIC") {
+    const assigned = await prisma.serviceOrder.count({ where: { vehicleId: existing.id, assignees: { some: { userId: req.user!.id } } } });
+    if (!assigned) return res.status(403).json({ error: "Sem acesso a este veículo." });
+  }
+
   const vehicle = await prisma.vehicle.update({ where: { id: req.params.id }, data: parsed.data });
+  await recordAudit({ userId: req.user!.id, action: "UPDATE", entity: "Vehicle", entityId: vehicle.id, before: existing, after: vehicle });
   res.json({ vehicle });
 });
 
