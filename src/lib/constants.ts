@@ -101,6 +101,12 @@ export const PART_KEYS = [
 ] as const;
 export type PartKey = (typeof PART_KEYS)[number];
 
+// Posição do problema no carro (VehiclePart.axle/side). Freio/pneu/suspensão já pedem o
+// lado ao cadastrar; os demais podem ganhar posição depois, em "Editar preço".
+export const PART_AXLES = ["dianteiro", "traseiro"] as const;
+export const PART_SIDES = ["esquerdo", "direito", "ambos"] as const;
+export const POSITION_PART_KEYS = new Set<string>(["pneus", "freios", "suspensao"]);
+
 export const APPROVAL_STATUSES = ["PENDING", "APPROVED", "REJECTED"] as const;
 export const MEDIA_TYPES = ["PHOTO", "VIDEO", "AUDIO", "DOCUMENT"] as const;
 export const USER_ROLES = ["CUSTOMER", "MECHANIC", "ADMIN"] as const;

@@ -5,7 +5,7 @@ import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
 import { upload, guessMediaType, persistUploadedFile } from "@/middleware/upload";
-import { PART_KEYS, PART_STATUSES, STATUS_PROGRESS } from "@/lib/constants";
+import { PART_AXLES, PART_KEYS, PART_SIDES, PART_STATUSES, POSITION_PART_KEYS, STATUS_PROGRESS } from "@/lib/constants";
 import { HttpError } from "@/lib/http-error";
 import { roundMoney } from "@/services/finance-rules";
 export const partsRouter = Router({ mergeParams: true });
@@ -58,6 +58,9 @@ const problemSchema = z.object({
   estimatedValue: z.coerce.number().min(0).optional(),
   laborValue: z.coerce.number().min(0).optional(),
   partUsages: z.string().optional(),
+  // O formulário manda eixo/lado sempre; só vale para freio/pneu/suspensão (ver abaixo).
+  axle: z.enum(PART_AXLES).optional(),
+  side: z.enum(PART_SIDES).optional(),
 });
 
 const usageSchema = z.array(z.object({
@@ -108,6 +111,9 @@ async function replacePartUsages(approval: { id: string }, usages: z.infer<typeo
 const priceProblemSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().min(4).optional(),
+  // Posição da bolinha no modelo do veículo — null limpa (volta a usar o texto).
+  axle: z.enum(PART_AXLES).nullable().optional(),
+  side: z.enum(PART_SIDES).nullable().optional(),
   laborValue: z.number().min(0).default(0),
   partUsages: usageSchema.default([]),
 });
@@ -137,12 +143,14 @@ partsRouter.patch(
     const wasPending = existing.status === "PENDING";
 
     const result = await prisma.$transaction(async (tx) => {
-      if (parsed.data.name || parsed.data.description) {
+      if (parsed.data.name || parsed.data.description || parsed.data.axle !== undefined || parsed.data.side !== undefined) {
         await tx.vehiclePart.update({
           where: { id: existing.partId! },
           data: {
             name: parsed.data.name,
             note: parsed.data.description,
+            axle: parsed.data.axle,
+            side: parsed.data.side,
           },
         });
       }
@@ -215,6 +223,7 @@ partsRouter.post(
 
     const files = Array.isArray(req.files) ? req.files : [];
     const { key, name, description, wearLevel } = parsed.data;
+    const position = POSITION_PART_KEYS.has(key) ? { axle: parsed.data.axle ?? null, side: parsed.data.side ?? null } : {};
     const isAdmin = req.user!.role === "ADMIN";
     const laborValue = isAdmin ? parsed.data.laborValue ?? parsed.data.estimatedValue : undefined;
     const uploadedFiles = await Promise.all(
@@ -234,6 +243,7 @@ partsRouter.post(
           status: "CRITICAL",
           note: description,
           wearLevel,
+          ...position,
           responsibleId: req.user!.id,
         },
         update: {
@@ -241,6 +251,7 @@ partsRouter.post(
           status: "CRITICAL",
           note: description,
           wearLevel,
+          ...position,
           responsibleId: req.user!.id,
         },
       });

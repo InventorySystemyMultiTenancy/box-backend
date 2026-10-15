@@ -738,6 +738,10 @@ model VehiclePart {
   status            String       @default("NOT_INSPECTED") // NOT_INSPECTED | IN_PROGRESS | WARNING | CRITICAL | DONE
   note              String?
   wearLevel         Int? // 0-100
+  // Posição do problema no carro (bolinha do modelo do veículo). Quando preenchidos,
+  // valem mais que as palavras do nome/observação ("dianteira", "esquerdo"...).
+  axle              String? // dianteiro | traseiro
+  side              String? // esquerdo | direito | ambos
   responsibleId     String?
   responsible       User?        @relation("PartResponsible", fields: [responsibleId], references: [id])
   warranty          String? // texto livre (legado, exibido ao cliente)
