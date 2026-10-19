@@ -77,7 +77,20 @@ function receivableFilters(query: Record<string, unknown>) {
   const from = typeof query.from === "string" && query.from ? new Date(query.from) : undefined;
   // "até" só com data inclui o dia inteiro.
   const to = typeof query.to === "string" && query.to ? endOfPeriod(query.to) : undefined;
+  // Busca livre: descrição (placa nas contas de projeto), código da OS, placa ou cliente.
+  const q = typeof query.q === "string" && query.q.trim() ? query.q.trim() : undefined;
+  const contains = q ? { contains: q, mode: "insensitive" as const } : undefined;
   return {
+    ...(contains
+      ? {
+          OR: [
+            { description: contains },
+            { serviceOrder: { code: contains } },
+            { serviceOrder: { vehicle: { plate: contains } } },
+            { client: { name: contains } },
+          ],
+        }
+      : {}),
     ...(category ? { category } : {}),
     ...(clientId ? { clientId } : {}),
     ...(from || to ? { dueDate: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),

@@ -10,7 +10,7 @@ import { parsePageParams, paginated } from "@/lib/pagination";
 import { upload, persistUploadedFile } from "@/middleware/upload";
 import { recordAudit } from "@/services/audit.service";
 import { createOrGetShareLink, revokeShareLink, getActiveShareLink, ShareLinkError } from "@/services/share-link.service";
-import { createOrderReceivables, orderAlreadyBilled } from "@/services/service-order-billing.service";
+import { BILLABLE_ORDER_INCLUDE, billFinishedOrder, billOrderOnDelivery } from "@/services/service-order-billing.service";
 import { clearServiceOrderAlerts } from "@/services/alerts.service";
 import { saveServiceOrderReportPdf } from "@/services/service-order-report.service";
 export const serviceOrdersRouter = Router();
@@ -446,6 +446,10 @@ serviceOrdersRouter.patch(
         data: { status, progress: progress ?? STATUS_PROGRESS[status] },
       });
 
+      // Chegou em "Finalizado": o valor do projeto já entra em contas a receber (pendente),
+      // sem esperar "pronto para retirada". Na entrega a cobrança é ajustada (ver /finalize).
+      if (statusChanged && status === "FINISHED") await billFinishedOrder(tx, order.id);
+
       let event = null;
       if (statusChanged || photoUrl) {
         event = await tx.timelineEvent.create({
@@ -487,9 +491,6 @@ serviceOrdersRouter.patch(
   }
 );
 
-// multipart manda booleano como texto — z.coerce.boolean() trataria "false" como true.
-const formBoolean = z.enum(["true", "false"]).transform((v) => v === "true");
-
 const finalizeSchema = z.object({
   description: z.string().optional(),
   extraValue: z.coerce.number().min(0).optional(),
@@ -497,7 +498,6 @@ const finalizeSchema = z.object({
   paymentMethod: z.string().optional(),
   installments: z.coerce.number().int().min(1).max(24).optional(),
   firstDueDate: z.string().optional(),
-  receivedNow: formBoolean.optional(),
   bankAccountId: z.string().optional(),
 });
 
@@ -544,15 +544,13 @@ serviceOrdersRouter.patch(
           deliveryDescription: description,
           deliveryExtraValue: extraValue,
         },
-        include: { vehicle: { include: { owner: { include: { client: { select: { id: true } } } } } } },
+        include: BILLABLE_ORDER_INCLUDE,
       });
 
       // Receita = trabalho de fato concluído (peça com status DONE), aprovado ou não pelo
-      // cliente (exceto o reprovado), + valor extra. Finalizar de novo uma OS já cobrada não
-      // gera outra cobrança (ex.: corrigir a descrição da entrega).
-      if (!(await orderAlreadyBilled(tx, order.id))) {
-        await createOrderReceivables(tx, order, extraValue ?? 0, payment);
-      }
+      // cliente (exceto o reprovado), + valor extra — sempre pendente (recebe no Financeiro).
+      // Já cobrada ao chegar em "Finalizado": ajusta com as condições da entrega, sem duplicar.
+      await billOrderOnDelivery(tx, order, extraValue ?? 0, payment);
 
       if (signatureUrl) {
         await tx.media.create({

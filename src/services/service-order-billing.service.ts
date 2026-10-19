@@ -50,21 +50,34 @@ export interface OrderPaymentInput {
   paymentMethod?: string;
   installments?: number;
   firstDueDate?: string;
-  /** Cliente pagou na retirada — a 1ª parcela (ou o valor todo, se à vista) já nasce recebida. */
-  receivedNow?: boolean;
   bankAccountId?: string;
 }
 
+/** Dados da OS que a cobrança usa: valor, cliente e o veículo (placa vai na descrição). */
+export interface BillableOrder {
+  id: string;
+  code: string;
+  estimatedMin: number | null;
+  vehicle: { plate: string | null; brand: string; model: string; owner: { client: { id: string } | null } };
+}
+
+/** "Serviços — ABC1D23" (placa); sem placa, marca/modelo. A OS continua ligada (busca por OS). */
+export function orderReceivableDescription(vehicle: BillableOrder["vehicle"]) {
+  return `Serviços — ${vehicle.plate?.trim() || `${vehicle.brand} ${vehicle.model}`}`;
+}
+
+/** Include do Prisma com o que BillableOrder precisa. */
+export const BILLABLE_ORDER_INCLUDE = {
+  vehicle: { include: { owner: { include: { client: { select: { id: true } } } } } },
+} as const;
+
 /**
- * Gera a cobrança de uma OS como conta(s) a receber — a receita só entra no Resumo/Fluxo de
- * caixa/DRE quando cada parcela é de fato recebida, e nunca duas vezes para a mesma OS.
+ * Gera a cobrança de uma OS como conta(s) a receber — sempre PENDENTE: o recebimento (com a
+ * data e o valor real, que pode ter desconto) é dado em Financeiro > Contas a receber. A
+ * receita só entra no Resumo/Fluxo de caixa/DRE quando cada parcela é de fato recebida, e
+ * nunca duas vezes para a mesma OS.
  */
-export async function createOrderReceivables(
-  tx: AppTx,
-  order: { id: string; code: string; estimatedMin: number | null; vehicle: { owner: { client: { id: string } | null } } },
-  extraValue: number,
-  payment: OrderPaymentInput
-) {
+export async function createOrderReceivables(tx: AppTx, order: BillableOrder, extraValue: number, payment: OrderPaymentInput) {
   if (await orderAlreadyBilled(tx, order.id)) {
     throw new HttpError(409, "Esta OS já tem cobrança gerada — confira em Financeiro > Contas a receber.");
   }
@@ -76,31 +89,79 @@ export async function createOrderReceivables(
   const total = orderBillingTotal(approvals, order.estimatedMin, extraValue);
   if (total <= 0) return [];
 
-  const now = new Date();
-  const installments = splitInstallments(total, payment.installments ?? 1, payment.firstDueDate ? new Date(payment.firstDueDate) : now);
+  const installments = splitInstallments(total, payment.installments ?? 1, payment.firstDueDate ? new Date(payment.firstDueDate) : new Date());
   const groupId = installments.length > 1 ? randomUUID() : undefined;
 
   const created = [];
   for (const inst of installments) {
-    const received = payment.receivedNow && inst.number === 1;
     created.push(
       await tx.accountReceivable.create({
         data: {
-          description: `Serviços — OS ${order.code}`,
+          description: orderReceivableDescription(order.vehicle),
           category: ORDER_RECEIVABLE_CATEGORY,
           serviceOrderId: order.id,
           clientId: order.vehicle.owner.client?.id,
           amount: inst.amount,
-          dueDate: received ? now : inst.dueDate,
+          dueDate: inst.dueDate,
           paymentMethod: payment.paymentMethod,
           bankAccountId: payment.bankAccountId,
           installmentNumber: installments.length > 1 ? inst.number : undefined,
           installmentTotal: installments.length > 1 ? installments.length : undefined,
           groupId,
-          ...(received ? { status: "RECEIVED", receivedAt: now, receivedAmount: inst.amount } : {}),
         },
       })
     );
   }
   return created;
+}
+
+/**
+ * Projeto chegou em "Finalizado": lança a cobrança já (pendente, à vista, vencendo hoje), sem
+ * esperar a entrega. Se já existe cobrança, não faz nada.
+ */
+export async function billFinishedOrder(tx: AppTx, serviceOrderId: string) {
+  if (await orderAlreadyBilled(tx, serviceOrderId)) return [];
+  const order = await tx.serviceOrder.findUniqueOrThrow({ where: { id: serviceOrderId }, include: BILLABLE_ORDER_INCLUDE });
+  return createOrderReceivables(tx, order, 0, {});
+}
+
+/**
+ * Cobrança na entrega (finalize). Sem cobrança ainda: cria com as condições escolhidas. Já
+ * cobrada ao chegar em "Finalizado" e nada recebido/faturado em nota: refaz com a forma de
+ * pagamento, parcelas, vencimento e valor extra da entrega. Se algo já foi recebido (ou há
+ * nota ligada), mantém o que existe e só lança o valor extra como uma conta a mais.
+ */
+export async function billOrderOnDelivery(tx: AppTx, order: BillableOrder, extraValue: number, payment: OrderPaymentInput) {
+  const existing = await tx.accountReceivable.findMany({
+    where: { serviceOrderId: order.id, status: { not: "CANCELLED" } },
+    select: { id: true, status: true, _count: { select: { invoices: true } } },
+  });
+  const legacyEntries = await tx.financialEntry.count({
+    where: { serviceOrderId: order.id, type: "INCOME", category: { in: [...LEGACY_ORDER_INCOME_CATEGORIES] } },
+  });
+  if (legacyEntries > 0) return [];
+
+  if (existing.length === 0) return createOrderReceivables(tx, order, extraValue, payment);
+
+  const untouched = existing.every((r) => (r.status === "PENDING" || r.status === "OVERDUE") && r._count.invoices === 0);
+  if (untouched) {
+    await tx.accountReceivable.deleteMany({ where: { id: { in: existing.map((r) => r.id) } } });
+    return createOrderReceivables(tx, order, extraValue, payment);
+  }
+
+  if (extraValue <= 0) return [];
+  return [
+    await tx.accountReceivable.create({
+      data: {
+        description: `${orderReceivableDescription(order.vehicle)} (valor extra na entrega)`,
+        category: ORDER_RECEIVABLE_CATEGORY,
+        serviceOrderId: order.id,
+        clientId: order.vehicle.owner.client?.id,
+        amount: extraValue,
+        dueDate: payment.firstDueDate ? new Date(payment.firstDueDate) : new Date(),
+        paymentMethod: payment.paymentMethod,
+        bankAccountId: payment.bankAccountId,
+      },
+    }),
+  ];
 }
