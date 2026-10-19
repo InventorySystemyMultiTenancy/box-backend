@@ -153,7 +153,8 @@ export async function getHomeKpis() {
     activeOrders: activeByStatus.reduce((sum, s) => sum + s._count._all, 0),
     byStatus: activeByStatus.map((s) => ({ status: s.status, count: s._count._all })),
     receivableOpen: roundMoney(openReceivables.reduce((sum, r) => sum + r.amount, 0)),
-    receivableOverdue: roundMoney(openReceivables.filter((r) => r.dueDate < now).reduce((sum, r) => sum + r.amount, 0)),
+    // Sem prazo também conta como vencida (ver overdueReceivableWhere).
+    receivableOverdue: roundMoney(openReceivables.filter((r) => !r.dueDate || r.dueDate < now).reduce((sum, r) => sum + r.amount, 0)),
   };
 }
 

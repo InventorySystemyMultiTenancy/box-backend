@@ -225,7 +225,9 @@ model AccountReceivable {
   serviceOrderId    String?
   serviceOrder      ServiceOrder? @relation(fields: [serviceOrderId], references: [id])
   amount            Decimal       @db.Decimal(12, 2)
-  dueDate           DateTime
+  // Prazo — vazio = sem prazo definido, e a conta já conta como vencida até alguém pôr
+  // a data (Financeiro > Contas a receber, coluna Prazo). Vale até o fim do dia.
+  dueDate           DateTime?
   receivedAt        DateTime?
   receivedAmount    Decimal?      @db.Decimal(12, 2)
   status            String        @default("PENDING") // PENDING | RECEIVED | OVERDUE | CANCELLED

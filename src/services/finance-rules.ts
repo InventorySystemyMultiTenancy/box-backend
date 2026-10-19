@@ -1,3 +1,5 @@
+import { HttpError } from "@/lib/http-error";
+
 // Regras puras (sem banco) do financeiro — compartilhadas entre rotas e
 // serviços, e cobertas por testes em finance-rules.test.ts.
 
@@ -116,4 +118,11 @@ export function isDuplicatedOrderIncome(entry: IncomeEntryLike, ordersWithReceiv
     entry.serviceOrderId !== null &&
     ordersWithReceivables.has(entry.serviceOrderId)
   );
+}
+
+/** Prazo escolhido (YYYY-MM-DD, ou ISO) vale até o fim daquele dia no horário de Brasília. */
+export function dueDateFromInput(value: string) {
+  const day = value.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new HttpError(400, "Prazo inválido.");
+  return new Date(`${day}T23:59:59.999-03:00`);
 }

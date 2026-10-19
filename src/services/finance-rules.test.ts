@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isDuplicatedOrderIncome, orderBillingTotal, parseSettlementDate, roundMoney, SettlementDateError, splitInstallments, summarizeSettlementGroups } from "@/services/finance-rules";
+import { dueDateFromInput, isDuplicatedOrderIncome, orderBillingTotal, parseSettlementDate, roundMoney, SettlementDateError, splitInstallments, summarizeSettlementGroups } from "@/services/finance-rules";
 
 describe("summarizeSettlementGroups", () => {
   it("em aberto = pendentes + vencidas; vencidas à parte; quitado usa o valor efetivamente pago", () => {
@@ -52,6 +52,17 @@ describe("roundMoney", () => {
     expect(roundMoney(0.1 + 0.2)).toBe(0.3);
     expect(roundMoney(1.005)).toBe(1.01);
     expect(roundMoney(10)).toBe(10);
+  });
+});
+
+describe("dueDateFromInput", () => {
+  it("o prazo vale até o fim do dia em Brasília", () => {
+    expect(dueDateFromInput("2026-10-20").toISOString()).toBe("2026-10-21T02:59:59.999Z");
+    expect(dueDateFromInput("2026-10-20T15:00:00.000Z").toISOString()).toBe("2026-10-21T02:59:59.999Z");
+  });
+
+  it("recusa o que não é data", () => {
+    expect(() => dueDateFromInput("20/10/2026")).toThrow("Prazo inválido.");
   });
 });
 

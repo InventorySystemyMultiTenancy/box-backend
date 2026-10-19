@@ -8,6 +8,7 @@ import {
   receiveAccountReceivable,
   updateAccountReceivable,
   cancelAccountReceivable,
+  setAccountReceivableDueDate,
   createReceivableFromServiceOrder,
   summarizeAccountsReceivable,
   ReceivableError,
@@ -39,6 +40,9 @@ const fromOrderSchema = z.object({
   serviceOrderId: z.string(),
   dueDate: z.string(),
 });
+
+// Coluna "Prazo": data (YYYY-MM-DD) ou null para tirar o prazo (fica vencida).
+const dueDateSchema = z.object({ dueDate: z.string().nullable() });
 
 const updateSchema = z.object({
   description: z.string().min(1).optional(),
@@ -103,6 +107,19 @@ accountsReceivableRouter.patch("/:id", requireAuth, requirePermission("finance",
 
   try {
     const receivable = await updateAccountReceivable(req.params.id, parsed.data);
+    res.json({ receivable });
+  } catch (err) {
+    if (err instanceof ReceivableError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
+});
+
+accountsReceivableRouter.patch("/:id/due-date", requireAuth, requirePermission("finance", "manage"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = dueDateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
+
+  try {
+    const receivable = await setAccountReceivableDueDate(req.params.id, parsed.data.dueDate);
     res.json({ receivable });
   } catch (err) {
     if (err instanceof ReceivableError) return res.status(err.status).json({ error: err.message });

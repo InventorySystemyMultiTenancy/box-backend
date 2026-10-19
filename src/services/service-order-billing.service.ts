@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { prisma, AppTx } from "@/lib/prisma";
 import { HttpError } from "@/lib/http-error";
-import { LEGACY_ORDER_INCOME_CATEGORIES, isDuplicatedOrderIncome, orderBillingTotal, splitInstallments } from "@/services/finance-rules";
+import { dueDateFromInput, LEGACY_ORDER_INCOME_CATEGORIES, isDuplicatedOrderIncome, orderBillingTotal, splitInstallments } from "@/services/finance-rules";
 
 export const ORDER_RECEIVABLE_CATEGORY = "SERVIÇO";
 
@@ -89,7 +89,10 @@ export async function createOrderReceivables(tx: AppTx, order: BillableOrder, ex
   const total = orderBillingTotal(approvals, order.estimatedMin, extraValue);
   if (total <= 0) return [];
 
-  const installments = splitInstallments(total, payment.installments ?? 1, payment.firstDueDate ? new Date(payment.firstDueDate) : new Date());
+  const installments = splitInstallments(total, payment.installments ?? 1, payment.firstDueDate ? dueDateFromInput(payment.firstDueDate) : new Date());
+  // À vista sem prazo escolhido: fica sem prazo (aparece vencida até alguém pôr a data na
+  // coluna Prazo do Financeiro). Parcelado sem data: parcelas a partir de hoje.
+  const withoutDueDate = !payment.firstDueDate && installments.length === 1;
   const groupId = installments.length > 1 ? randomUUID() : undefined;
 
   const created = [];
@@ -102,7 +105,7 @@ export async function createOrderReceivables(tx: AppTx, order: BillableOrder, ex
           serviceOrderId: order.id,
           clientId: order.vehicle.owner.client?.id,
           amount: inst.amount,
-          dueDate: inst.dueDate,
+          dueDate: withoutDueDate ? null : inst.dueDate,
           paymentMethod: payment.paymentMethod,
           bankAccountId: payment.bankAccountId,
           installmentNumber: installments.length > 1 ? inst.number : undefined,
@@ -116,8 +119,8 @@ export async function createOrderReceivables(tx: AppTx, order: BillableOrder, ex
 }
 
 /**
- * Projeto chegou em "Finalizado": lança a cobrança já (pendente, à vista, vencendo hoje), sem
- * esperar a entrega. Se já existe cobrança, não faz nada.
+ * Projeto chegou em "Finalizado": lança a cobrança já (pendente, à vista, sem prazo — o prazo
+ * é posto depois no Financeiro), sem esperar a entrega. Se já existe cobrança, não faz nada.
  */
 export async function billFinishedOrder(tx: AppTx, serviceOrderId: string) {
   if (await orderAlreadyBilled(tx, serviceOrderId)) return [];
@@ -158,7 +161,7 @@ export async function billOrderOnDelivery(tx: AppTx, order: BillableOrder, extra
         serviceOrderId: order.id,
         clientId: order.vehicle.owner.client?.id,
         amount: extraValue,
-        dueDate: payment.firstDueDate ? new Date(payment.firstDueDate) : new Date(),
+        dueDate: payment.firstDueDate ? dueDateFromInput(payment.firstDueDate) : null,
         paymentMethod: payment.paymentMethod,
         bankAccountId: payment.bankAccountId,
       },

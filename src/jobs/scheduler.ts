@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { refreshAlerts } from "@/services/alerts.service";
+import { overdueReceivableWhere } from "@/services/accounts-receivable.service";
 
 // Rotina em segundo plano dentro do próprio processo (não há fila/cron externo no projeto):
 // recalcula os alertas (OS parada, contas vencidas, vistoria hoje, entrega
@@ -12,7 +13,7 @@ const FIRST_RUN_DELAY_MS = 30 * 1000;
 export async function runHousekeeping() {
   const now = new Date();
   await prisma.accountPayable.updateMany({ where: { status: "PENDING", dueDate: { lt: now } }, data: { status: "OVERDUE" } });
-  await prisma.accountReceivable.updateMany({ where: { status: "PENDING", dueDate: { lt: now } }, data: { status: "OVERDUE" } });
+  await prisma.accountReceivable.updateMany({ where: overdueReceivableWhere(now), data: { status: "OVERDUE" } });
   await refreshAlerts();
 }
 

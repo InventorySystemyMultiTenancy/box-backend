@@ -1,9 +1,17 @@
 import { randomUUID } from "crypto";
 import { prisma, toNumber } from "@/lib/prisma";
 import { pageAcrossSegments, parsePageParams, paginated } from "@/lib/pagination";
-import { parseSettlementDate, SettlementDateError, splitInstallments, summarizeSettlementGroups } from "@/services/finance-rules";
+import { dueDateFromInput, parseSettlementDate, SettlementDateError, splitInstallments, summarizeSettlementGroups } from "@/services/finance-rules";
 import { endOfPeriod } from "@/services/cash-flow.service";
 import { createOrderReceivables } from "@/services/service-order-billing.service";
+
+/**
+ * Conta a receber vencida: pendente sem prazo, ou com o prazo já passado. É a regra usada
+ * para virar OVERDUE (aqui e no agendador) — sem prazo, já aparece como vencida.
+ */
+export function overdueReceivableWhere(now = new Date()) {
+  return { status: "PENDING", OR: [{ dueDate: null }, { dueDate: { lt: now } }] };
+}
 
 export class ReceivableError extends Error {
   constructor(message: string, public status: number) {
@@ -45,7 +53,7 @@ export interface UpdateReceivableInput {
 }
 
 export async function createAccountsReceivable(input: AccountReceivableInput) {
-  const parts = splitInstallments(input.amount, input.installments ?? 1, new Date(input.dueDate));
+  const parts = splitInstallments(input.amount, input.installments ?? 1, dueDateFromInput(input.dueDate));
   const installments = parts.length;
   const groupId = installments > 1 ? randomUUID() : undefined;
 
@@ -143,11 +151,12 @@ export async function listAccountsReceivable(query: Record<string, unknown>) {
       pageParams,
       {
         count: () => prisma.accountReceivable.count({ where: open }),
-        find: (skip, take) => prisma.accountReceivable.findMany({ where: open, include, orderBy: { dueDate: "asc" }, skip, take }),
+        // Sem prazo primeiro (já vencidas), depois o prazo mais antigo.
+        find: (skip, take) => prisma.accountReceivable.findMany({ where: open, include, orderBy: { dueDate: { sort: "asc", nulls: "first" } }, skip, take }),
       },
       {
         count: () => prisma.accountReceivable.count({ where: closed }),
-        find: (skip, take) => prisma.accountReceivable.findMany({ where: closed, include, orderBy: { dueDate: "desc" }, skip, take }),
+        find: (skip, take) => prisma.accountReceivable.findMany({ where: closed, include, orderBy: { dueDate: { sort: "desc", nulls: "last" } }, skip, take }),
       }
     );
     return paginated(items, total, pageParams);
@@ -206,7 +215,7 @@ export async function updateAccountReceivable(id: string, input: UpdateReceivabl
       category: input.category,
       clientId: input.clientId,
       amount: input.amount,
-      dueDate: input.dueDate ? new Date(input.dueDate) : undefined,
+      dueDate: input.dueDate ? dueDateFromInput(input.dueDate) : undefined,
       paymentMethod: input.paymentMethod,
       bankAccountId: input.bankAccountId,
       notes: input.notes,
@@ -240,8 +249,20 @@ export async function createReceivableFromServiceOrder(serviceOrderId: string, d
 }
 
 async function markOverdueReceivables() {
-  await prisma.accountReceivable.updateMany({
-    where: { status: "PENDING", dueDate: { lt: new Date() } },
-    data: { status: "OVERDUE" },
-  });
+  await prisma.accountReceivable.updateMany({ where: overdueReceivableWhere(), data: { status: "OVERDUE" } });
+}
+
+/**
+ * Coluna "Prazo" da lista: define (ou limpa) o vencimento de uma conta em aberto. Prazo
+ * futuro devolve a conta vencida para pendente; sem prazo ou com prazo passado, vencida.
+ */
+export async function setAccountReceivableDueDate(id: string, dueDate: string | null) {
+  const existing = await prisma.accountReceivable.findUnique({ where: { id } });
+  if (!existing) throw new ReceivableError("Conta a receber não encontrada.", 404);
+  if (existing.status !== "PENDING" && existing.status !== "OVERDUE") {
+    throw new ReceivableError("Só dá para mudar o prazo de uma conta em aberto.", 409);
+  }
+  const due = dueDate ? dueDateFromInput(dueDate) : null;
+  const overdue = !due || due.getTime() < Date.now();
+  return prisma.accountReceivable.update({ where: { id }, data: { dueDate: due, status: overdue ? "OVERDUE" : "PENDING" } });
 }
