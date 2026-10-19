@@ -147,21 +147,35 @@ export async function archiveClient(id: string) {
 // um User (Vehicle.ownerId exige um dono com login) — cria os dois juntos com uma senha
 // gerada, já que o funcionário não vai inventar uma senha para um cliente que chegou agora.
 // A senha é devolvida uma única vez na resposta para a equipe repassar se quiser.
-export async function createClientWithLogin(input: ClientInput) {
-  if (!input.email) throw new ClientError("Informe um e-mail para criar o acesso do cliente.", 400);
+// Cliente sem e-mail (e-mail e telefone são opcionais no novo projeto): o veículo precisa de
+// um User dono, então o usuário nasce com um e-mail técnico único neste domínio reservado
+// (.invalid nunca entrega e-mail) e sem senha conhecida — ou seja, sem acesso ao portal.
+// As telas mostram "sem e-mail" no lugar (ver isPlaceholderEmail no frontend).
+export const PLACEHOLDER_EMAIL_DOMAIN = "sem-email.reblind.invalid";
 
-  const existingUser = await prisma.user.findUnique({ where: { email: input.email } });
-  if (existingUser) throw new ClientError("Já existe um usuário com este e-mail.", 409);
+export async function createClientWithLogin(input: ClientInput) {
+  const email = input.email?.trim() || undefined;
+  if (email) {
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    if (existingUser) throw new ClientError("Já existe um usuário com este e-mail.", 409);
+  }
 
   const generatedPassword = crypto.randomBytes(6).toString("base64url");
   const passwordHash = await bcrypt.hash(generatedPassword, 10);
 
   const user = await prisma.user.create({
-    data: { name: input.name, email: input.email, passwordHash, role: "CUSTOMER", phone: input.phone },
+    data: {
+      name: input.name,
+      email: email ?? `cliente-${crypto.randomUUID()}@${PLACEHOLDER_EMAIL_DOMAIN}`,
+      passwordHash,
+      role: "CUSTOMER",
+      phone: input.phone || undefined,
+    },
   });
-  const client = await prisma.client.create({ data: { ...toData(input), userId: user.id } as never });
+  const client = await prisma.client.create({ data: { ...toData({ ...input, email }), userId: user.id } as never });
 
-  return { client, user, generatedPassword };
+  // Sem e-mail não há como entrar no portal — não faz sentido mostrar uma senha.
+  return { client, user, generatedPassword: email ? generatedPassword : null };
 }
 
 // Usado pela leitura de nota fiscal por IA: casa o destinatário identificado na imagem
