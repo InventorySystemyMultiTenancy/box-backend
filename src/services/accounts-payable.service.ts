@@ -217,8 +217,30 @@ export async function createAccountsPayable(input: AccountPayableInput, tx?: App
   return tx ? run(tx) : prisma.$transaction((t) => run(t));
 }
 
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Dia inteiro no horário de Brasília (data de pagamento: gravada no momento ou ao meio-dia). */
+function brazilDayRange(day: string) {
+  return { gte: new Date(`${day}T00:00:00.000-03:00`), lte: new Date(`${day}T23:59:59.999-03:00`) };
+}
+
+/** Dia inteiro em UTC — data de emissão é gravada só como data (meia-noite UTC). */
+function utcDayRange(day: string) {
+  return { gte: new Date(`${day}T00:00:00.000Z`), lt: new Date(new Date(`${day}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000) };
+}
+
+/** "1.234,56", "1234,56" ou "1234.56" -> 1234.56; null se não for número. */
+export function parseMoneyFilter(value: string) {
+  const text = value.trim().replace(/[R$\s]/g, "");
+  const normalized = text.includes(",") ? text.replace(/\./g, "").replace(",", ".") : text;
+  const amount = Number(normalized);
+  return normalized && Number.isFinite(amount) ? Math.round(amount * 100) / 100 : null;
+}
+
 // Filtros da aba Contas a pagar, SEM o de situação/status — reaproveitado pela listagem
 // (que soma o filtro de situação) e pelos totais do topo (que mostram aberto e pago juntos).
+// Filtros da tela: emissão da nota, nº da nota, fornecedor, duplicata, valor, data de
+// pagamento e observação. Período/setor/categoria/grupo continuam aceitos (relatórios).
 function payableFilters(query: Record<string, unknown>) {
   const category = typeof query.category === "string" ? query.category : undefined;
   const from = typeof query.from === "string" && query.from ? new Date(query.from) : undefined;
@@ -233,10 +255,25 @@ function payableFilters(query: Record<string, unknown>) {
   // Despesas separadas por setor (origem) e por grupo.
   const sector = typeof query.sector === "string" && query.sector.trim() ? query.sector.trim() : undefined;
   const group = typeof query.group === "string" && query.group.trim() ? query.group.trim() : undefined;
+  const text = (key: string) => (typeof query[key] === "string" && (query[key] as string).trim() ? (query[key] as string).trim() : undefined);
+  const issueDate = text("issueDate") && DAY.test(text("issueDate")!) ? text("issueDate") : undefined;
+  const paidDate = text("paidDate") && DAY.test(text("paidDate")!) ? text("paidDate") : undefined;
+  const documentNumber = text("documentNumber");
+  const notes = text("notes");
+  const amount = text("amount") ? parseMoneyFilter(text("amount")!) : null;
+
+  // Cada filtro com OR próprio entra como condição separada (não colidem no mesmo objeto).
+  const and: Record<string, unknown>[] = [];
+  if (issueDate) and.push({ OR: [{ issueDate: utcDayRange(issueDate) }, { invoice: { issueDate: utcDayRange(issueDate) } }] });
+  if (amount !== null) and.push({ OR: [{ amount }, { paidAmount: amount }] });
 
   return {
     dateField,
     where: {
+    ...(and.length ? { AND: and } : {}),
+    ...(paidDate ? { paidAt: brazilDayRange(paidDate) } : {}),
+    ...(documentNumber ? { documentNumber: { contains: documentNumber, mode: "insensitive" as const } } : {}),
+    ...(notes ? { notes: { contains: notes, mode: "insensitive" as const } } : {}),
     ...(category ? { category } : {}),
     ...(sector ? { expenseSector: sector } : {}),
     ...(group ? { expenseGroup: group } : {}),
@@ -395,6 +432,24 @@ export async function payAccountPayable(id: string, input: PayInput) {
     resolvePayableAlerts(id),
   ]);
   return paid;
+}
+
+/**
+ * "Marcar tudo como pago": baixa várias contas em aberto de uma vez, com a data de hoje e o
+ * valor cheio de cada uma (a baixa individual continua permitindo outra data/valor). Contas
+ * já pagas ou canceladas na lista são ignoradas.
+ */
+export async function payManyAccountsPayable(ids: string[]) {
+  const open = await prisma.accountPayable.findMany({
+    where: { id: { in: ids }, status: { in: ["PENDING", "OVERDUE"] } },
+    select: { id: true, amount: true },
+  });
+  const paidAt = new Date();
+  await prisma.$transaction([
+    ...open.map((p) => prisma.accountPayable.update({ where: { id: p.id }, data: { status: "PAID", paidAt, paidAmount: p.amount } })),
+    prisma.notification.deleteMany({ where: { entity: "AccountPayable", entityId: { in: open.map((p) => p.id) } } }),
+  ]);
+  return { paid: open.length, skipped: ids.length - open.length };
 }
 
 // Edição livre de qualquer campo pelo usuário — inclusive de uma conta já paga

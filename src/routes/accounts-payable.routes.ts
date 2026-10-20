@@ -6,6 +6,7 @@ import {
   createAccountsPayable,
   listAccountsPayable,
   payAccountPayable,
+  payManyAccountsPayable,
   updateAccountPayable,
   cancelAccountPayable,
   summarizeAccountsPayable,
@@ -113,6 +114,15 @@ accountsPayableRouter.post("/", requireAuth, requirePermission("finance", "manag
     if (err instanceof PayableError) return res.status(err.status).json({ error: err.message });
     throw err;
   }
+});
+
+// "Marcar tudo como pago" (contas selecionadas na lista filtrada) — data de hoje, valor cheio.
+const payManySchema = z.object({ ids: z.array(z.string()).min(1).max(500) });
+
+accountsPayableRouter.post("/pay-many", requireAuth, requirePermission("finance", "manage"), async (req, res) => {
+  const parsed = payManySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Selecione ao menos uma conta.", details: parsed.error.flatten() });
+  res.json(await payManyAccountsPayable(parsed.data.ids));
 });
 
 accountsPayableRouter.post("/:id/pay", requireAuth, requirePermission("finance", "manage"), async (req: AuthedRequest<{ id: string }>, res) => {
