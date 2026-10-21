@@ -203,6 +203,15 @@ export async function receiveAccountReceivable(id: string, input: ReceiveInput) 
   });
 }
 
+function settlementDateOrThrow(value: string) {
+  try {
+    return parseSettlementDate(value);
+  } catch (err) {
+    if (err instanceof SettlementDateError) throw new ReceivableError(err.message, 400);
+    throw err;
+  }
+}
+
 // Edição livre de qualquer campo pelo usuário, inclusive de uma conta já recebida.
 export async function updateAccountReceivable(id: string, input: UpdateReceivableInput) {
   const existing = await prisma.accountReceivable.findUnique({ where: { id } });
@@ -219,7 +228,9 @@ export async function updateAccountReceivable(id: string, input: UpdateReceivabl
       paymentMethod: input.paymentMethod,
       bankAccountId: input.bankAccountId,
       notes: input.notes,
-      receivedAt: input.receivedAt ? new Date(input.receivedAt) : undefined,
+      // Mesma regra do recebimento: só a data vira meio-dia (não cai no dia anterior pelo
+      // fuso) e não aceita data futura — dá para corrigir a data de uma conta já recebida.
+      receivedAt: input.receivedAt ? settlementDateOrThrow(input.receivedAt) : undefined,
       receivedAmount: input.receivedAmount,
     },
   });

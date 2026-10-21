@@ -452,6 +452,15 @@ export async function payManyAccountsPayable(ids: string[]) {
   return { paid: open.length, skipped: ids.length - open.length };
 }
 
+function settlementDateOrThrow(value: string) {
+  try {
+    return parseSettlementDate(value);
+  } catch (err) {
+    if (err instanceof SettlementDateError) throw new PayableError(err.message, 400);
+    throw err;
+  }
+}
+
 // Edição livre de qualquer campo pelo usuário — inclusive de uma conta já paga
 // (corrigir valor/data lançados errado), diferente de "pagar" (que só baixa o status).
 export async function updateAccountPayable(id: string, input: UpdatePayableInput) {
@@ -482,7 +491,9 @@ export async function updateAccountPayable(id: string, input: UpdatePayableInput
       paymentMethod: input.paymentMethod,
       bankAccountId: input.bankAccountId,
       notes: input.notes,
-      paidAt: input.paidAt ? new Date(input.paidAt) : undefined,
+      // Mesma regra da baixa: só a data vira meio-dia (não cai no dia anterior pelo fuso) e
+      // não aceita data futura — dá para corrigir a data de uma conta já paga.
+      paidAt: input.paidAt ? settlementDateOrThrow(input.paidAt) : undefined,
       paidAmount: input.paidAmount,
     },
   });
