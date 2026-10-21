@@ -435,21 +435,25 @@ export async function payAccountPayable(id: string, input: PayInput) {
 }
 
 /**
- * "Marcar tudo como pago": baixa várias contas em aberto de uma vez, com a data de hoje e o
- * valor cheio de cada uma (a baixa individual continua permitindo outra data/valor). Contas
- * já pagas ou canceladas na lista são ignoradas.
+ * "Marcar como pagas": baixa várias contas em aberto de uma vez, com o valor cheio de cada
+ * uma. Data de pagamento por conta (YYYY-MM-DD, mesma regra da baixa individual) ou, sem
+ * data, agora. Contas já pagas ou canceladas na lista são ignoradas.
  */
-export async function payManyAccountsPayable(ids: string[]) {
+export async function payManyAccountsPayable(items: { id: string; paidAt?: string }[]) {
+  const now = new Date();
+  // Valida todas as datas antes de gravar qualquer coisa (tudo ou nada).
+  const dates = new Map(items.map((item) => [item.id, item.paidAt ? settlementDateOrThrow(item.paidAt) : now]));
   const open = await prisma.accountPayable.findMany({
-    where: { id: { in: ids }, status: { in: ["PENDING", "OVERDUE"] } },
+    where: { id: { in: [...dates.keys()] }, status: { in: ["PENDING", "OVERDUE"] } },
     select: { id: true, amount: true },
   });
-  const paidAt = new Date();
   await prisma.$transaction([
-    ...open.map((p) => prisma.accountPayable.update({ where: { id: p.id }, data: { status: "PAID", paidAt, paidAmount: p.amount } })),
+    ...open.map((p) =>
+      prisma.accountPayable.update({ where: { id: p.id }, data: { status: "PAID", paidAt: dates.get(p.id)!, paidAmount: p.amount } })
+    ),
     prisma.notification.deleteMany({ where: { entity: "AccountPayable", entityId: { in: open.map((p) => p.id) } } }),
   ]);
-  return { paid: open.length, skipped: ids.length - open.length };
+  return { paid: open.length, skipped: items.length - open.length };
 }
 
 function settlementDateOrThrow(value: string) {
