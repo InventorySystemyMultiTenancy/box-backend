@@ -6,6 +6,7 @@ import {
   createAccountsReceivable,
   listAccountsReceivable,
   receiveAccountReceivable,
+  receiveManyAccountsReceivable,
   updateAccountReceivable,
   cancelAccountReceivable,
   setAccountReceivableDueDate,
@@ -82,6 +83,22 @@ accountsReceivableRouter.post("/from-service-order", requireAuth, requirePermiss
   try {
     const receivable = await createReceivableFromServiceOrder(parsed.data.serviceOrderId, parsed.data.dueDate);
     res.status(201).json({ receivable });
+  } catch (err) {
+    if (err instanceof ReceivableError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
+});
+
+// "Marcar como recebidas" (contas selecionadas): uma data por conta (YYYY-MM-DD) ou nenhuma (= hoje).
+const receiveManySchema = z.object({
+  items: z.array(z.object({ id: z.string(), receivedAt: z.string().optional() })).min(1).max(500),
+});
+
+accountsReceivableRouter.post("/receive-many", requireAuth, requirePermission("finance", "manage"), async (req, res) => {
+  const parsed = receiveManySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Selecione ao menos uma conta.", details: parsed.error.flatten() });
+  try {
+    res.json(await receiveManyAccountsReceivable(parsed.data.items));
   } catch (err) {
     if (err instanceof ReceivableError) return res.status(err.status).json({ error: err.message });
     throw err;

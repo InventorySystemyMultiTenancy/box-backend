@@ -176,6 +176,27 @@ export async function listAccountsReceivable(query: Record<string, unknown>) {
   return paginated(items, total, pageParams);
 }
 
+/**
+ * "Marcar como recebidas": baixa várias contas em aberto de uma vez, com o valor cheio de
+ * cada uma. Data de recebimento por conta (YYYY-MM-DD, mesma regra da baixa individual) ou,
+ * sem data, agora. Contas já recebidas ou canceladas são ignoradas.
+ */
+export async function receiveManyAccountsReceivable(items: { id: string; receivedAt?: string }[]) {
+  const now = new Date();
+  // Valida todas as datas antes de gravar qualquer coisa (tudo ou nada).
+  const dates = new Map(items.map((item) => [item.id, item.receivedAt ? settlementDateOrThrow(item.receivedAt) : now]));
+  const open = await prisma.accountReceivable.findMany({
+    where: { id: { in: [...dates.keys()] }, status: { in: ["PENDING", "OVERDUE"] } },
+    select: { id: true, amount: true },
+  });
+  await prisma.$transaction(
+    open.map((r) =>
+      prisma.accountReceivable.update({ where: { id: r.id }, data: { status: "RECEIVED", receivedAt: dates.get(r.id)!, receivedAmount: r.amount } })
+    )
+  );
+  return { received: open.length, skipped: items.length - open.length };
+}
+
 export async function receiveAccountReceivable(id: string, input: ReceiveInput) {
   const receivable = await prisma.accountReceivable.findUnique({ where: { id } });
   if (!receivable) throw new ReceivableError("Conta a receber não encontrada.", 404);
