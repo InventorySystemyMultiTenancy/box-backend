@@ -39,6 +39,20 @@ export const upload = multer({
   },
 });
 
+// Checklist de entrada (fotos e vídeos de avaria): vídeo de celular passa fácil de 50 MB.
+// 100 MB é também o máximo de vídeo do plano gratuito do Cloudinary.
+export const DAMAGE_MEDIA_MAX_BYTES = 100 * 1024 * 1024;
+
+export const uploadDamageMedia = multer({
+  storage,
+  limits: { fileSize: DAMAGE_MEDIA_MAX_BYTES },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/") && isAllowedUpload(file.mimetype, file.originalname)) return cb(null, true);
+    if (file.mimetype.startsWith("video/") && isAllowedUpload(file.mimetype, file.originalname)) return cb(null, true);
+    cb(new UploadTypeError("No checklist de entrada envie só fotos ou vídeos."));
+  },
+});
+
 export function guessMediaType(mimetype: string): "PHOTO" | "VIDEO" | "AUDIO" | "DOCUMENT" {
   if (mimetype.startsWith("image/")) return "PHOTO";
   if (mimetype.startsWith("video/")) return "VIDEO";

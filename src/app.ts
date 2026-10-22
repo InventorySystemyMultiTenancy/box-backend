@@ -118,7 +118,10 @@ app.use((_req, res) => res.status(404).json({ error: "Rota não encontrada." }))
 // handlers async pra cá) virava uma página HTML com stack trace em vez de JSON.
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof MulterError) {
-    const message = err.code === "LIMIT_FILE_SIZE" ? "Arquivo muito grande (máximo 50 MB)." : "Não foi possível processar o arquivo enviado.";
+    const message =
+      err.code === "LIMIT_FILE_SIZE"
+        ? "Arquivo muito grande (máximo 50 MB; vídeo do checklist de entrada até 100 MB)."
+        : "Não foi possível processar o arquivo enviado.";
     return res.status(400).json({ error: message });
   }
   if (err instanceof UploadTypeError) return res.status(400).json({ error: err.message });

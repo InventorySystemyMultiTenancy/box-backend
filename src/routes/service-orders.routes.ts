@@ -4,10 +4,10 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder, serviceOrderVisibilityFilter } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
-import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS, SERVICE_ORDER_PRIORITIES, RETIRED_SERVICE_ORDER_STATUSES } from "@/lib/constants";
+import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS, SERVICE_ORDER_PRIORITIES, RETIRED_SERVICE_ORDER_STATUSES, MAX_DAMAGE_PHOTOS, MAX_DAMAGE_VIDEOS } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
 import { parsePageParams, paginated } from "@/lib/pagination";
-import { upload, persistUploadedFile } from "@/middleware/upload";
+import { upload, uploadDamageMedia, persistUploadedFile, guessMediaType } from "@/middleware/upload";
 import { recordAudit } from "@/services/audit.service";
 import { createOrGetShareLink, revokeShareLink, getActiveShareLink, ShareLinkError } from "@/services/share-link.service";
 import { BILLABLE_ORDER_INCLUDE, billFinishedOrder, billOrderOnDelivery } from "@/services/service-order-billing.service";
@@ -197,23 +197,40 @@ serviceOrdersRouter.post(
   "/:id/damage-photos",
   requireAuth,
   requireRole("MECHANIC", "ADMIN"),
-  upload.array("photos", 20),
+  // Fotos e vídeos (campo "photos" por compatibilidade) — até 20 fotos e 5 vídeos por projeto.
+  uploadDamageMedia.array("photos", MAX_DAMAGE_PHOTOS),
   async (req: AuthedRequest<{ id: string }>, res) => {
     const order = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
     if (!order) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
 
     const files = Array.isArray(req.files) ? req.files : [];
-    if (files.length === 0) return res.status(400).json({ error: "Envie ao menos uma foto." });
+    if (files.length === 0) return res.status(400).json({ error: "Envie ao menos uma foto ou vídeo." });
 
-    const uploaded = await Promise.all(files.map((file) => persistUploadedFile(file)));
+    const newVideos = files.filter((file) => file.mimetype.startsWith("video/")).length;
+    const newPhotos = files.length - newVideos;
+    const [photoCount, videoCount] = await Promise.all([
+      prisma.media.count({ where: { serviceOrderId: order.id, isDamagePhoto: true, type: "PHOTO" } }),
+      prisma.media.count({ where: { serviceOrderId: order.id, isDamagePhoto: true, type: "VIDEO" } }),
+    ]);
+    if (photoCount + newPhotos > MAX_DAMAGE_PHOTOS) {
+      return res.status(400).json({ error: `O checklist de entrada aceita até ${MAX_DAMAGE_PHOTOS} fotos.` });
+    }
+    if (videoCount + newVideos > MAX_DAMAGE_VIDEOS) {
+      return res.status(400).json({ error: `O checklist de entrada aceita até ${MAX_DAMAGE_VIDEOS} vídeos.` });
+    }
+
+    const uploaded = await Promise.all(files.map(async (file) => ({ file, url: await persistUploadedFile(file) })));
     await prisma.media.createMany({
-      data: uploaded.map((url) => ({
-        serviceOrderId: order.id,
-        url,
-        type: "PHOTO" as const,
-        label: "Foto de avaria pré-existente",
-        isDamagePhoto: true,
-      })),
+      data: uploaded.map(({ file, url }) => {
+        const type = guessMediaType(file.mimetype);
+        return {
+          serviceOrderId: order.id,
+          url,
+          type,
+          label: type === "VIDEO" ? "Vídeo de avaria pré-existente" : "Foto de avaria pré-existente",
+          isDamagePhoto: true,
+        };
+      }),
     });
 
     const media = await prisma.media.findMany({ where: { serviceOrderId: order.id, isDamagePhoto: true }, orderBy: { createdAt: "asc" } });

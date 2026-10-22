@@ -212,5 +212,9 @@ export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
 // Nº de dias parado num mesmo status a partir do qual a OS entra no alerta "parada".
 export const STALE_STATUS_ALERT_DAYS = 3;
+
+// Checklist de entrada do veículo (avarias que já existiam ao chegar), por projeto.
+export const MAX_DAMAGE_PHOTOS = 20;
+export const MAX_DAMAGE_VIDEOS = 5;
 // Nº de dias de complemento pendente a partir do qual entra no alerta.
 export const SUPPLEMENT_PENDING_ALERT_DAYS = 2;
