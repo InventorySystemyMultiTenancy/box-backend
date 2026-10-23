@@ -48,6 +48,17 @@ const createSchema = z
     dueDate: z.string().optional(),
     installments: z.number().int().min(1).max(60).optional(),
     duplicates: z.array(duplicateSchema).max(120).optional(),
+    // "Gerar nota fiscal": dados extras da nota cadastrada junto (precisa de invoiceNumber).
+    invoiceDetails: z
+      .object({
+        type: z.enum(["NFE", "NFSE", "NFCE"]).optional(),
+        series: z.string().optional(),
+        accessKey: z.string().optional(),
+        issuerDocument: z.string().optional(),
+        taxAmount: z.number().min(0).optional(),
+        discountAmount: z.number().min(0).optional(),
+      })
+      .optional(),
   })
   .refine((d) => (d.duplicates && d.duplicates.length > 0) || (d.amount !== undefined && d.dueDate), {
     message: "Informe ao menos uma duplicata (vencimento e valor).",

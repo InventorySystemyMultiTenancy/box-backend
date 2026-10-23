@@ -49,6 +49,17 @@ export interface AccountPayableInput {
   // Preenchido quando as parcelas nascem de uma nota fiscal de despesa (ver
   // invoices.service.ts) — liga cada AccountPayable de volta à Invoice de origem.
   invoiceId?: string;
+  // "Gerar nota fiscal" do formulário: dados extras da nota cadastrada junto com a conta.
+  invoiceDetails?: PayableInvoiceDetails;
+}
+
+export interface PayableInvoiceDetails {
+  type?: "NFE" | "NFSE" | "NFCE";
+  series?: string;
+  accessKey?: string;
+  issuerDocument?: string;
+  taxAmount?: number;
+  discountAmount?: number;
 }
 
 export interface PayInput {
@@ -83,7 +94,7 @@ export function payableDisplayDescription(input: Pick<AccountPayableInput, "desc
   return [what, input.payeeName, input.invoiceNumber ? `NF ${input.invoiceNumber}` : null].filter(Boolean).join(" — ");
 }
 
-interface PayableInvoiceData {
+interface PayableInvoiceData extends PayableInvoiceDetails {
   number: string;
   issuerName: string;
   totalAmount: number;
@@ -115,10 +126,10 @@ async function findOrCreatePayableInvoice(db: Pick<AppTx, "invoice">, data: Paya
 
   const invoice = await db.invoice.create({
     data: {
-      type: "NFE",
+      ...data,
+      type: data.type ?? "NFE",
       status: "ISSUED",
       provider: "MANUAL",
-      ...data,
     },
     select: { id: true },
   });
@@ -208,6 +219,7 @@ export async function createAccountsPayable(input: AccountPayableInput, tx?: App
             bankAccountId: input.bankAccountId,
             paymentMethod: rows[0]?.paymentMethod,
             description: input.notes?.trim() || undefined,
+            ...input.invoiceDetails,
           })
         : undefined);
 
@@ -247,7 +259,7 @@ function payableFilters(query: Record<string, unknown>) {
   // "até" só com data inclui o dia inteiro.
   const to = typeof query.to === "string" && query.to ? endOfPeriod(query.to) : undefined;
   // O período filtra pelo vencimento (padrão) ou pela data em que foi pago.
-  const dateField = query.dateField === "paidAt" ? "paidAt" : "dueDate";
+  const dateField = query.dateField === "paidAt" ? "paidAt" : query.dateField === "issueDate" ? "issueDate" : "dueDate";
   // "Nome" = fornecedor/beneficiário (payeeName); "número de nota" busca pela nota
   // fiscal ligada (Invoice.number) — nem toda conta a pagar tem uma nota vinculada.
   const payeeName = typeof query.payeeName === "string" && query.payeeName.trim() ? query.payeeName.trim() : undefined;
