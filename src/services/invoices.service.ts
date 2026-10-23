@@ -44,6 +44,46 @@ export interface InvoiceInput {
   installments?: number;
   installmentIntervalDays?: number;
   dueDate?: string;
+  // Parcelas já montadas no formulário (vencimento/valor de cada uma) — têm prioridade.
+  duplicates?: { dueDate: string; amount: number; documentNumber?: string }[];
+}
+
+const sameText = (value?: string | null) => (value?.trim() ? { equals: value.trim(), mode: "insensitive" as const } : undefined);
+
+/**
+ * Nota já cadastrada (não cancelada)? Com número: mesmo número e mesmo emitente (CNPJ/CPF,
+ * ou nome se não houver documento) — fornecedores diferentes podem repetir numeração; se
+ * a nota não tem emitente informado, basta o número. Sem número: mesmo emitente, mesmo valor
+ * e mesma data de emissão.
+ */
+export async function findDuplicateInvoice(input: Pick<InvoiceInput, "number" | "issuerName" | "issuerDocument" | "totalAmount" | "issueDate">) {
+  const number = input.number?.trim();
+  const doc = input.issuerDocument?.replace(/\D/g, "") || undefined;
+  // CNPJ/CPF pode ter sido gravado com ou sem pontuação.
+  const issuer = doc
+    ? { OR: [{ issuerDocument: doc }, { issuerDocument: input.issuerDocument!.trim() }] }
+    : input.issuerName?.trim()
+      ? { issuerName: sameText(input.issuerName) }
+      : null;
+
+  if (number) {
+    return prisma.invoice.findFirst({
+      where: { status: { not: "CANCELLED" }, number: sameText(number), ...(issuer ?? {}) },
+      select: { id: true, number: true, issuerName: true, totalAmount: true, createdAt: true },
+    });
+  }
+  if (!issuer || !input.issueDate) return null;
+  const day = input.issueDate.slice(0, 10);
+  const start = new Date(`${day}T00:00:00.000Z`);
+  return prisma.invoice.findFirst({
+    where: {
+      status: { not: "CANCELLED" },
+      ...issuer,
+      totalAmount: input.totalAmount,
+      issueDate: { gte: start, lt: new Date(start.getTime() + 24 * 60 * 60 * 1000) },
+    },
+    select: { id: true, number: true, issuerName: true, totalAmount: true, createdAt: true },
+  });
 }
 
 function isBoleto(paymentMethod?: string) {
@@ -124,8 +164,25 @@ export async function listInvoices(query: Record<string, unknown>) {
 // classificação (categoria = natureza da operação, grupo, descrição, setor) e banco.
 export async function createInvoiceDraft(input: InvoiceInput) {
   const generatesPayables = Boolean(input.isExpense) || isBoleto(input.paymentMethod);
-  if (generatesPayables && !input.dueDate) {
-    throw new InvoiceError("Informe a data de vencimento da primeira parcela.", 400);
+  const duplicates = input.duplicates?.length ? input.duplicates : undefined;
+  if (generatesPayables && !input.dueDate && !duplicates) {
+    throw new InvoiceError('Informe o vencimento e clique em "Gerar parcelas".', 400);
+  }
+  if (generatesPayables && duplicates) {
+    const sum = duplicates.reduce((total, d) => total + d.amount, 0);
+    if (Math.abs(sum - input.totalAmount) >= 0.01) {
+      throw new InvoiceError("A soma das parcelas não bate com o valor total da nota — gere as parcelas de novo.", 400);
+    }
+  }
+
+  // Não deixa cadastrar a mesma nota duas vezes.
+  const duplicate = await findDuplicateInvoice(input);
+  if (duplicate) {
+    const what = [duplicate.number ? `NF ${duplicate.number}` : null, duplicate.issuerName].filter(Boolean).join(" — ");
+    throw new InvoiceError(
+      `Esta nota fiscal já foi cadastrada${what ? ` (${what}, cadastrada em ${duplicate.createdAt.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })})` : ""}.`,
+      409
+    );
   }
   const classification = normalizeClassification({
     category: input.operationNature,
@@ -165,7 +222,7 @@ export async function createInvoiceDraft(input: InvoiceInput) {
       },
     });
 
-    if (generatesPayables && input.dueDate) {
+    if (generatesPayables && (duplicates || input.dueDate)) {
       await createAccountsPayable(
         {
           description: input.description?.trim() || undefined,
@@ -176,6 +233,7 @@ export async function createInvoiceDraft(input: InvoiceInput) {
           payeeName: input.issuerName?.trim() || "Fornecedor",
           amount: input.totalAmount,
           dueDate: input.dueDate,
+          duplicates: duplicates?.map((d) => ({ dueDate: d.dueDate, amount: d.amount, documentNumber: d.documentNumber })),
           paymentMethod: input.paymentMethod,
           bankAccountId: input.bankAccountId || undefined,
           installments: input.installments,

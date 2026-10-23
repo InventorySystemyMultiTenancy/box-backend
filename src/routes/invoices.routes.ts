@@ -65,6 +65,14 @@ const createSchema = z.object({
   discountAmount: z.number().min(0).optional(),
   taxAmount: z.number().min(0).optional(),
   issueDate: z.string().optional(),
+  // Parcelas geradas no formulário (vencimento e valor de cada uma) — viram as contas a
+  // pagar da nota de despesa/boleto. Sem elas, cai no parcelamento antigo (dueDate +
+  // installments) abaixo.
+  duplicates: z
+    .array(z.object({ dueDate: z.string(), amount: z.number().positive(), documentNumber: z.string().optional() }))
+    .min(1)
+    .max(60)
+    .optional(),
   // Só usados quando paymentMethod é "boleto" — geram as contas a pagar (uma por
   // mês) a partir de dueDate, ligadas a esta nota.
   installments: z.coerce.number().int().min(1).max(60).optional(),
