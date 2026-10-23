@@ -62,6 +62,33 @@ vehiclesRouter.post(
   }
 );
 
+// Novo projeto: veículo que já passou pela oficina? Busca pela placa ignorando traço,
+// espaço e maiúsculas ("abc-1d23" = "ABC1D23") e devolve o veículo, o dono, o cadastro de
+// cliente dele e o último projeto — o formulário pré-preenche tudo e avisa.
+vehiclesRouter.get("/by-plate/:plate", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ plate: string }>, res) => {
+  const plate = req.params.plate.replace(/[^a-z0-9]/gi, "").toUpperCase();
+  if (plate.length < 7) return res.json({ vehicle: null });
+
+  const [match] = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "Vehicle"
+    WHERE regexp_replace(upper(coalesce("plate", '')), '[^A-Z0-9]', '', 'g') = ${plate}
+    ORDER BY "createdAt" DESC
+    LIMIT 1`;
+  if (!match) return res.json({ vehicle: null });
+
+  const vehicle = await prisma.vehicle.findUnique({
+    where: { id: match.id },
+    include: {
+      owner: { select: { id: true, name: true, email: true, phone: true, client: { select: { id: true, name: true, phone: true } } } },
+      serviceOrders: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, code: true, status: true, createdAt: true, archivedAt: true } },
+    },
+  });
+  if (!vehicle) return res.json({ vehicle: null });
+
+  const { serviceOrders, ...rest } = vehicle;
+  res.json({ vehicle: rest, lastOrder: serviceOrders[0] ?? null });
+});
+
 // Consulta de placa digitada à mão (botão "Consultar placa" do novo projeto).
 vehiclesRouter.get("/plate/:plate", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ plate: string }>, res) => {
   const lookup = await lookupPlate(req.params.plate);
