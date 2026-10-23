@@ -35,6 +35,16 @@ const receiveSchema = z.object({
   receivedAmount: z.number().positive().optional(),
   bankAccountId: z.string().optional(),
   paymentMethod: z.string().optional(),
+  // Nota fiscal do recebimento: associar uma existente ou criar uma nova ligada à conta.
+  invoiceId: z.string().optional(),
+  newInvoice: z
+    .object({
+      number: z.string().min(1),
+      series: z.string().optional(),
+      type: z.enum(["NFE", "NFSE", "NFCE"]).optional(),
+      issueDate: z.string().optional(),
+    })
+    .optional(),
 });
 
 const fromOrderSchema = z.object({

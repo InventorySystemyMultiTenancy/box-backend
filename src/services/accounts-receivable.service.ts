@@ -37,6 +37,10 @@ export interface ReceiveInput {
   receivedAmount?: number;
   bankAccountId?: string;
   paymentMethod?: string;
+  // Nota fiscal do recebimento: liga uma nota já cadastrada...
+  invoiceId?: string;
+  // ...ou cria a nota ali mesmo (emitida pela oficina), já ligada a esta conta.
+  newInvoice?: { number: string; series?: string; type?: "NFE" | "NFSE" | "NFCE"; issueDate?: string };
 }
 
 export interface UpdateReceivableInput {
@@ -140,7 +144,13 @@ export async function listAccountsReceivable(query: Record<string, unknown>) {
     ...(status ? { status } : {}),
   };
 
-  const include = { bankAccount: true, client: true, serviceOrder: { select: { id: true, code: true } } };
+  const include = {
+    bankAccount: true,
+    client: true,
+    serviceOrder: { select: { id: true, code: true } },
+    // Nota fiscal do recebimento (coluna "Nota" da lista).
+    invoices: { where: { status: { not: "CANCELLED" } }, select: { id: true, number: true } },
+  };
 
   // Sem filtro de status: vencidas e as mais próximas do vencimento no topo,
   // depois recebidas/canceladas (as de vencimento mais recente primeiro).
@@ -212,16 +222,76 @@ export async function receiveAccountReceivable(id: string, input: ReceiveInput) 
     throw err;
   }
 
-  return prisma.accountReceivable.update({
-    where: { id },
-    data: {
-      status: "RECEIVED",
-      receivedAt,
-      receivedAmount: input.receivedAmount ?? receivable.amount,
-      bankAccountId: input.bankAccountId ?? receivable.bankAccountId,
-      paymentMethod: input.paymentMethod ?? receivable.paymentMethod,
-    },
-  });
+  const receivedAmount = input.receivedAmount ?? receivable.amount;
+  const paymentMethod = input.paymentMethod ?? receivable.paymentMethod;
+
+  // Nota fiscal: valida tudo antes de dar baixa (se a nota não pode, a conta não é recebida).
+  if (input.invoiceId) {
+    const invoice = await prisma.invoice.findUnique({ where: { id: input.invoiceId } });
+    if (!invoice || invoice.status === "CANCELLED") throw new ReceivableError("Nota fiscal não encontrada.", 404);
+    if (invoice.accountReceivableId && invoice.accountReceivableId !== id) {
+      throw new ReceivableError("Esta nota fiscal já está ligada a outra conta a receber.", 409);
+    }
+  }
+  const newNumber = input.newInvoice?.number.trim();
+  if (input.newInvoice && !newNumber) throw new ReceivableError("Informe o número da nota fiscal.", 400);
+  if (newNumber) {
+    // Nota da própria oficina (sem emitente e sem contas a pagar) com o mesmo número — não
+    // compara com nota de fornecedor, que pode repetir a numeração.
+    const duplicate = await prisma.invoice.findFirst({
+      where: {
+        status: { not: "CANCELLED" },
+        number: { equals: newNumber, mode: "insensitive" },
+        OR: [{ issuerName: null }, { issuerName: "" }],
+        payables: { none: {} },
+      },
+      select: { number: true },
+    });
+    if (duplicate) {
+      throw new ReceivableError(`A nota fiscal ${duplicate.number} já foi cadastrada — use "Associar nota existente".`, 409);
+    }
+  }
+
+  const client = receivable.clientId ? await prisma.client.findUnique({ where: { id: receivable.clientId }, select: { name: true, cpfCnpj: true } }) : null;
+
+  const [received] = await prisma.$transaction([
+    prisma.accountReceivable.update({
+      where: { id },
+      data: {
+        status: "RECEIVED",
+        receivedAt,
+        receivedAmount,
+        bankAccountId: input.bankAccountId ?? receivable.bankAccountId,
+        paymentMethod,
+      },
+    }),
+    ...(input.invoiceId ? [prisma.invoice.update({ where: { id: input.invoiceId }, data: { accountReceivableId: id } })] : []),
+    ...(newNumber
+      ? [
+          prisma.invoice.create({
+            data: {
+              // Conta a receber de projeto é serviço — NFS-e por padrão.
+              type: input.newInvoice!.type ?? "NFSE",
+              status: "ISSUED",
+              provider: "MANUAL",
+              number: newNumber,
+              series: input.newInvoice!.series?.trim() || undefined,
+              // Mesma convenção das outras notas: emissão gravada só como data.
+              issueDate: input.newInvoice!.issueDate ? new Date(input.newInvoice!.issueDate.slice(0, 10)) : receivedAt,
+              totalAmount: receivedAmount,
+              clientId: receivable.clientId,
+              serviceOrderId: receivable.serviceOrderId,
+              accountReceivableId: id,
+              recipientName: client?.name,
+              recipientDocument: client?.cpfCnpj ?? undefined,
+              paymentMethod: paymentMethod ?? undefined,
+              description: receivable.description,
+            },
+          }),
+        ]
+      : []),
+  ]);
+  return received;
 }
 
 function settlementDateOrThrow(value: string) {

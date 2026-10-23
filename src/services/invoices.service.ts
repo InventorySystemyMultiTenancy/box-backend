@@ -106,12 +106,16 @@ export async function listInvoices(query: Record<string, unknown>) {
   const number = str(query.number);
   const orderCode = str(query.orderCode);
   const date = str(query.date);
+  // Só notas que ainda podem ser ligadas a um recebimento: sem conta a receber, sem contas
+  // a pagar (nota de despesa) e não canceladas — lista do "Associar nota existente".
+  const unlinked = query.unlinked === "true";
 
   // Cada filtro entra como uma condição própria (em vez de espalhar chaves no mesmo
   // objeto) pra não colidir quando mais de um filtro precisa do seu próprio OR
   // (nome do cliente e data, por exemplo).
   const conditions: Record<string, unknown>[] = [];
   if (status) conditions.push({ status });
+  if (unlinked) conditions.push({ accountReceivableId: null, payables: { none: {} }, status: { not: "CANCELLED" } });
   if (type) conditions.push({ type });
   if (clientName) {
     conditions.push({
