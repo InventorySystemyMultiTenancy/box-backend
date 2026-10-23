@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder, serviceOrderVisibilityFilter } from "@/lib/authorization";
+import { vehicleIdsMatchingPlate } from "@/lib/plate-search";
 import { emitToOrder } from "@/sockets";
 import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS, SERVICE_ORDER_PRIORITIES, RETIRED_SERVICE_ORDER_STATUSES, MAX_DAMAGE_PHOTOS, MAX_DAMAGE_VIDEOS } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
@@ -85,6 +86,8 @@ serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   // scope=history: concluídos/com baixa, paginado e com busca no servidor (aba "Concluídos").
   const history = req.query.scope === "history";
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  // Placa sem o traço ("abc1234" acha "ABC-1234") — o "contains" sozinho exigia o traço.
+  const plateVehicleIds = q ? await vehicleIdsMatchingPlate(q) : [];
 
   const where = {
     // Admin vê todos; funcionário só os projetos associados a ele; cliente só os dele.
@@ -103,6 +106,7 @@ serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
               OR: [
                 { code: { contains: q, mode: "insensitive" as const } },
                 { vehicle: { plate: { contains: q, mode: "insensitive" as const } } },
+                ...(plateVehicleIds.length ? [{ vehicleId: { in: plateVehicleIds } }] : []),
                 { vehicle: { brand: { contains: q, mode: "insensitive" as const } } },
                 { vehicle: { model: { contains: q, mode: "insensitive" as const } } },
                 { vehicle: { owner: { name: { contains: q, mode: "insensitive" as const } } } },

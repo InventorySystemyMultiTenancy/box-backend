@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { serviceOrderVisibilityFilter } from "@/lib/authorization";
+import { vehicleIdsMatchingPlate } from "@/lib/plate-search";
 import { getSearchAssistance, SearchAssistantError, SearchAssistTurn } from "@/services/search-assistant.service";
 import { transcribeAudio, SpeechToTextError } from "@/services/speech-to-text.service";
 import { upload } from "@/middleware/upload";
@@ -19,6 +20,8 @@ searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req:
   const contains = { contains: q, mode: "insensitive" as const };
   // Funcionário só encontra os projetos (e orçamentos deles) associados a ele.
   const visibleOrders = serviceOrderVisibilityFilter(req.user!.id, req.user!.role);
+  // Placa sem o traço ("abc1234" acha "ABC-1234").
+  const plateVehicleIds = await vehicleIdsMatchingPlate(q);
 
   const [orders, estimates, users, vehicles, suppliers, parts, trucks, insuranceCompanies] = await Promise.all([
     prisma.serviceOrder.findMany({
@@ -27,6 +30,7 @@ searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req:
         OR: [
           { code: contains },
           { vehicle: { plate: contains } },
+          ...(plateVehicleIds.length ? [{ vehicleId: { in: plateVehicleIds } }] : []),
           { vehicle: { brand: contains } },
           { vehicle: { model: contains } },
           { vehicle: { owner: { name: contains } } },
@@ -64,6 +68,7 @@ searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req:
           { brand: contains },
           { model: contains },
           { plate: contains },
+          ...(plateVehicleIds.length ? [{ id: { in: plateVehicleIds } }] : []),
           { chassi: contains },
           { renavam: contains },
           { owner: { name: contains } },
