@@ -83,17 +83,21 @@ function parseUsages(raw: string | undefined): z.infer<typeof usageSchema> {
 }
 
 /**
- * Troca as peças de um problema pela lista nova e devolve o valor total delas (preço do
- * cadastro × quantidade). Peça é só catálogo com preço — não há estoque a movimentar.
+ * Troca as peças de um problema pela lista nova e devolve o valor total delas (preço ×
+ * quantidade). Peça que já estava no problema mantém o valor unitário que tinha — que pode
+ * ter sido editado à mão ("Peças do serviço") —; peça nova entra com o preço do cadastro.
+ * Peça é só catálogo com preço — não há estoque a movimentar.
  */
 async function replacePartUsages(approval: { id: string }, usages: z.infer<typeof usageSchema>, tx: AppTx) {
+  const previous = await tx.problemPartUsage.findMany({ where: { approvalId: approval.id }, select: { inventoryPartId: true, unitCostSnapshot: true } });
+  const previousCost = new Map(previous.map((u) => [u.inventoryPartId, Number(u.unitCostSnapshot)]));
   await tx.problemPartUsage.deleteMany({ where: { approvalId: approval.id } });
 
   let partsValue = 0;
   for (const usage of usages) {
     const inventoryPart = await tx.inventoryPart.findUnique({ where: { id: usage.inventoryPartId } });
     if (!inventoryPart || !inventoryPart.active) throw new HttpError(404, "Peça não encontrada ou inativa no cadastro.");
-    const unitCost = Number(inventoryPart.unitCost);
+    const unitCost = previousCost.get(inventoryPart.id) ?? Number(inventoryPart.unitCost);
     partsValue += unitCost * usage.quantity;
     await tx.problemPartUsage.create({
       data: {
@@ -107,6 +111,60 @@ async function replacePartUsages(approval: { id: string }, usages: z.infer<typeo
 
   return roundMoney(partsValue);
 }
+
+const usagePriceSchema = z.object({
+  unitCost: z.number().min(0),
+  quantity: z.number().int().min(1).optional(),
+});
+
+// "Peças do serviço" dentro do projeto: muda o valor unitário (e a quantidade) de UMA peça
+// de um problema — só neste projeto, o cadastro da peça não muda. Recalcula o total de
+// peças e o total do problema (mão de obra + peças).
+partsRouter.patch(
+  "/problems/:approvalId/usages/:usageId",
+  requireAuth,
+  requireRole("ADMIN"),
+  async (req: AuthedRequest<{ orderId: string; approvalId: string; usageId: string }>, res) => {
+    const parsed = usagePriceSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Valor inválido.", details: parsed.error.flatten() });
+
+    const usage = await prisma.problemPartUsage.findUnique({
+      where: { id: req.params.usageId },
+      include: { approval: true, inventoryPart: { select: { name: true } } },
+    });
+    if (!usage || usage.approvalId !== req.params.approvalId || usage.approval.serviceOrderId !== req.params.orderId) {
+      return res.status(404).json({ error: "Peça não encontrada neste problema." });
+    }
+
+    const before = { unitCost: Number(usage.unitCostSnapshot), quantity: usage.quantity };
+    const quantity = parsed.data.quantity ?? usage.quantity;
+
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.problemPartUsage.update({ where: { id: usage.id }, data: { unitCostSnapshot: parsed.data.unitCost, quantity } });
+      const all = await tx.problemPartUsage.findMany({ where: { approvalId: usage.approvalId } });
+      const partsValue = roundMoney(all.reduce((sum, u) => sum + Number(u.unitCostSnapshot) * u.quantity, 0));
+      const approval = await tx.approval.update({
+        where: { id: usage.approvalId },
+        data: { partsValue, estimatedValue: roundMoney(Number(usage.approval.laborValue ?? 0) + partsValue) },
+        include: { media: true, partUsages: { include: { inventoryPart: true } } },
+      });
+      const event = await tx.timelineEvent.create({
+        data: {
+          serviceOrderId: req.params.orderId,
+          title: `Valor de peça alterado: ${usage.inventoryPart.name}`,
+          description: `${before.quantity}x R$ ${before.unitCost.toFixed(2)} → ${quantity}x R$ ${parsed.data.unitCost.toFixed(2)}`,
+          authorId: req.user!.id,
+        },
+        include: { media: true, author: { select: { name: true } } },
+      });
+      return { approval, event };
+    });
+
+    emitToOrder(req.params.orderId, "approval:update", { approval: result.approval });
+    emitToOrder(req.params.orderId, "timeline:new", { event: result.event });
+    res.json(result);
+  }
+);
 
 const priceProblemSchema = z.object({
   name: z.string().min(1).optional(),
