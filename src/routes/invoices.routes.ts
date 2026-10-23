@@ -28,7 +28,12 @@ invoicesRouter.post(
       const extracted = await extractInvoiceFromImage(req.file.path, req.file.mimetype);
       // Casa (ou cadastra automaticamente) o cliente identificado na imagem como
       // destinatário — o usuário só confirma no formulário antes de salvar a nota.
-      const { client, created } = await findOrCreateClientFromDocument(extracted.recipientName, extracted.recipientDocument);
+      // ?matchClient=false (nota de compra lida na conta a pagar): o destinatário é a própria
+      // oficina, então não procura nem cadastra cliente.
+      const matchClient = req.query.matchClient !== "false";
+      const { client, created } = matchClient
+        ? await findOrCreateClientFromDocument(extracted.recipientName, extracted.recipientDocument)
+        : { client: null, created: false };
       res.json({ extracted, clientId: client?.id ?? null, clientName: client?.name ?? null, clientCreated: created });
     } catch (err) {
       if (err instanceof InvoiceOcrError) return res.status(err.status).json({ error: err.message });
