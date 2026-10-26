@@ -173,9 +173,11 @@ financeRouter.post("/expenses", requireAuth, requireRole("MECHANIC", "ADMIN"), a
   res.status(201).json({ entry });
 });
 
-// Gastos que o próprio usuário lançou num período — usado pelo relatório em PDF na
-// aba Gastos. Cada funcionário só vê os seus; o Resumo (admin) já tem o filtro geral.
+// Gastos lançados num período — lista e relatório em PDF da aba Gastos. Funcionário vê só
+// os seus; o admin vê os lançados por todo mundo (scope=mine para só os dele). Lançamentos
+// automáticos do sistema (sem autor: peças, projeto...) ficam de fora.
 financeRouter.get("/my-expenses", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
+  const everyone = req.user!.role === "ADMIN" && req.query.scope !== "mine";
   const from = typeof req.query.from === "string" ? req.query.from : undefined;
   const to = typeof req.query.to === "string" ? req.query.to : undefined;
   // "to" é só a data (sem hora) — soma um dia pra incluir o dia inteiro, não só a
@@ -184,11 +186,12 @@ financeRouter.get("/my-expenses", requireAuth, requireRole("MECHANIC", "ADMIN"),
 
   const entries = await prisma.financialEntry.findMany({
     where: {
-      createdById: req.user!.id,
+      createdById: everyone ? { not: null } : req.user!.id,
       type: "EXPENSE",
       ...(from || toExclusive ? { occurredAt: { ...(from ? { gte: new Date(from) } : {}), ...(toExclusive ? { lt: toExclusive } : {}) } } : {}),
     },
     orderBy: { occurredAt: "desc" },
+    include: { createdBy: { select: { id: true, name: true } } },
   });
 
   res.json({ entries, total: entries.reduce((sum, e) => sum + e.amount, 0) });
