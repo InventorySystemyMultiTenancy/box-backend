@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response, ParamsDictionary } from "express-serve-static-core";
-import { verifyToken } from "@/lib/jwt";
+import { signToken, TOKEN_RENEW_AFTER_SECONDS, verifyToken } from "@/lib/jwt";
 import { prisma } from "@/lib/prisma";
 
 export interface AuthedRequest<P extends ParamsDictionary = ParamsDictionary> extends Request<P> {
@@ -15,7 +15,7 @@ export async function resolveTokenUser(token: string) {
   const payload = verifyToken(token);
   const user = await prisma.user.findUnique({ where: { id: payload.sub }, select: { id: true, role: true, active: true } });
   if (!user || !user.active) return null;
-  return { id: user.id, role: user.role };
+  return { id: user.id, role: user.role, issuedAt: payload.iat };
 }
 
 export async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -23,14 +23,19 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
   if (!header?.startsWith("Bearer ")) {
     return res.status(401).json({ error: "Token ausente." });
   }
-  let user: { id: string; role: string } | null;
+  let user: { id: string; role: string; issuedAt?: number } | null;
   try {
     user = await resolveTokenUser(header.slice(7));
   } catch {
     return res.status(401).json({ error: "Token inválido ou expirado." });
   }
   if (!user) return res.status(401).json({ error: "Sua conta está desativada ou não existe mais." });
-  req.user = user;
+  // Sessão deslizante: quem está usando o sistema recebe um token novo (o site troca
+  // sozinho) — só cai depois de JWT_EXPIRES_IN sem uso, nunca no meio do trabalho.
+  if (user.issuedAt && Date.now() / 1000 - user.issuedAt > TOKEN_RENEW_AFTER_SECONDS) {
+    res.setHeader("X-Renewed-Token", signToken({ sub: user.id, role: user.role }));
+  }
+  req.user = { id: user.id, role: user.role };
   next();
 }
 
