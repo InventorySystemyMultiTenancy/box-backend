@@ -20,6 +20,7 @@ describe("rememberExpenseClassification", () => {
     await rememberExpenseClassification(db, { category: "Despesas fixas", group: "FOLHA DE PAGAMENTO", description: "ASSISTÊNCIA MÉDICA", sector: "Administração" });
     expect(saved).toEqual([
       { kind: "CATEGORY", name: "Despesas fixas", parentName: "" },
+      { kind: "CATEGORY", name: "Despesas fixas", parentName: "FOLHA DE PAGAMENTO" },
       { kind: "GROUP", name: "FOLHA DE PAGAMENTO", parentName: "" },
       { kind: "DESCRIPTION", name: "ASSISTÊNCIA MÉDICA", parentName: "FOLHA DE PAGAMENTO" },
       { kind: "SECTOR", name: "Administração", parentName: "" },

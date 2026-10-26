@@ -32,6 +32,8 @@ export async function rememberExpenseClassification(db: Db, input: ExpenseClassi
   const c = normalizeClassification(input);
   const rows: { kind: string; name: string; parentName: string }[] = [];
   if (c.category) rows.push({ kind: "CATEGORY", name: c.category, parentName: "" });
+  // Categoria também fica guardada dentro do grupo — volta como sugestão daquele grupo.
+  if (c.category && c.group) rows.push({ kind: "CATEGORY", name: c.category, parentName: c.group });
   if (c.group) rows.push({ kind: "GROUP", name: c.group, parentName: "" });
   if (c.description) rows.push({ kind: "DESCRIPTION", name: c.description, parentName: c.group ?? "" });
   if (c.sector) rows.push({ kind: "SECTOR", name: c.sector, parentName: "" });
@@ -42,10 +44,12 @@ export async function listExpenseClassifications() {
   const rows = await prisma.expenseClassification.findMany({ orderBy: { name: "asc" } });
   const names = (kind: string) => rows.filter((r) => r.kind === kind).map((r) => r.name);
   return {
-    categories: names("CATEGORY"),
+    categories: [...new Set(names("CATEGORY"))],
     groups: names("GROUP"),
     sectors: names("SECTOR"),
     // Descrição pertence a um grupo (ASSISTÊNCIA MÉDICA → FOLHA DE PAGAMENTO); "" = sem grupo.
     descriptions: rows.filter((r) => r.kind === "DESCRIPTION").map((r) => ({ group: r.parentName, name: r.name })),
+    // Categorias de cada grupo (plano de contas: DESPESAS FIXAS → ALUGUEL PREDIAL, SABESP...).
+    groupCategories: rows.filter((r) => r.kind === "CATEGORY" && r.parentName).map((r) => ({ group: r.parentName, name: r.name })),
   };
 }
