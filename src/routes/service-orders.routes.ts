@@ -105,6 +105,7 @@ serviceOrdersRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
             {
               OR: [
                 { code: { contains: q, mode: "insensitive" as const } },
+                { ssNumber: { contains: q, mode: "insensitive" as const } },
                 { vehicle: { plate: { contains: q, mode: "insensitive" as const } } },
                 ...(plateVehicleIds.length ? [{ vehicleId: { in: plateVehicleIds } }] : []),
                 { vehicle: { brand: { contains: q, mode: "insensitive" as const } } },
@@ -148,6 +149,7 @@ const createOrderSchema = z.object({
   scheduledAt: z.string().datetime().optional(),
   storeId: z.string().optional(),
   priority: z.enum(SERVICE_ORDER_PRIORITIES).optional(),
+  ssNumber: z.string().trim().max(50).optional(),
   // Funcionários associados já na criação (só o admin escolhe; quem cria entra sozinho).
   assigneeIds: z.array(z.string()).optional(),
 });
@@ -183,6 +185,7 @@ serviceOrdersRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), asy
       scheduledAt: parsed.data.scheduledAt ? new Date(parsed.data.scheduledAt) : undefined,
       storeId: parsed.data.storeId,
       priority: parsed.data.priority,
+      ssNumber: parsed.data.ssNumber || undefined,
       status: "RECEIVED",
       progress: STATUS_PROGRESS.RECEIVED,
       timelineEvents: {
@@ -374,6 +377,7 @@ const processSchema = z.object({
   deductibleAmount: z.coerce.number().nullable().optional(),
   serviceType: z.string().nullable().optional(),
   authorizationNumber: z.string().nullable().optional(),
+  ssNumber: z.string().trim().max(50).nullable().optional(),
 });
 
 // Campos de processo (Fase 1 do gap SIGMA): consultor/orçamentista/técnico, prioridade,
@@ -387,6 +391,7 @@ serviceOrdersRouter.patch("/:id/process", requireAuth, requireRole("MECHANIC", "
   if (!before) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
 
   const { deliveryForecastAt, ...rest } = parsed.data;
+  if (rest.ssNumber === "") rest.ssNumber = null;
   const events: { title: string; description?: string }[] = [];
 
   if (rest.currentSectorId !== undefined && rest.currentSectorId !== before.currentSectorId) {

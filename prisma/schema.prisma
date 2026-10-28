@@ -585,6 +585,8 @@ model Vehicle {
 model ServiceOrder {
   id                  String    @id @default(cuid())
   code                String    @unique // ex: OS-2026-04471
+  // SS (solicitação de serviço) — número/letras informado na abertura do projeto, opcional.
+  ssNumber            String?
   storeId             String?
   store               Store?    @relation(fields: [storeId], references: [id])
   vehicleId           String

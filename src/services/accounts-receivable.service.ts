@@ -89,7 +89,7 @@ function receivableFilters(query: Record<string, unknown>) {
   const from = typeof query.from === "string" && query.from ? new Date(query.from) : undefined;
   // "até" só com data inclui o dia inteiro.
   const to = typeof query.to === "string" && query.to ? endOfPeriod(query.to) : undefined;
-  // Busca livre: descrição (placa nas contas de projeto), código da OS, placa ou cliente.
+  // Busca livre: descrição (placa nas contas de projeto), código/SS da OS, placa ou cliente.
   const q = typeof query.q === "string" && query.q.trim() ? query.q.trim() : undefined;
   const contains = q ? { contains: q, mode: "insensitive" as const } : undefined;
   return {
@@ -98,6 +98,7 @@ function receivableFilters(query: Record<string, unknown>) {
           OR: [
             { description: contains },
             { serviceOrder: { code: contains } },
+            { serviceOrder: { ssNumber: contains } },
             { serviceOrder: { vehicle: { plate: contains } } },
             { client: { name: contains } },
           ],
@@ -147,7 +148,8 @@ export async function listAccountsReceivable(query: Record<string, unknown>) {
   const include = {
     bankAccount: true,
     client: true,
-    serviceOrder: { select: { id: true, code: true } },
+    // SS e data de finalização da OS (colunas "SS" e "Data" da lista).
+    serviceOrder: { select: { id: true, code: true, ssNumber: true, completedAt: true } },
     // Nota fiscal do recebimento (coluna "Nota" da lista).
     invoices: { where: { status: { not: "CANCELLED" } }, select: { id: true, number: true } },
   };

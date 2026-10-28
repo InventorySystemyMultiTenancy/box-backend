@@ -29,6 +29,7 @@ searchRouter.get("/", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req:
         ...visibleOrders,
         OR: [
           { code: contains },
+          { ssNumber: contains },
           { vehicle: { plate: contains } },
           ...(plateVehicleIds.length ? [{ vehicleId: { in: plateVehicleIds } }] : []),
           { vehicle: { brand: contains } },
