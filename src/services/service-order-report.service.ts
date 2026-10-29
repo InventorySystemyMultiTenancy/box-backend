@@ -79,6 +79,23 @@ function loadReportOrder(orderId: string) {
 
 export type ReportOrder = Awaited<ReturnType<typeof loadReportOrder>>;
 
+type ValueSource = { status: string; laborValue: number | null; partsValue: number | null; estimatedValue: number | null };
+
+/**
+ * Valores do PDF: problema recusado pelo cliente aparece, mas não soma no total; sem nenhum
+ * valor lançado, vale o estimado da abertura. Mesma regra do quadro "Valores do projeto"
+ * (projectValues em box-frontend/src/lib/order-values.ts).
+ */
+export function projectValues(order: { approvals: ValueSource[]; estimatedMin: number | null; deliveryExtraValue: number | null }) {
+  const counted = order.approvals.filter((a) => a.status !== "REJECTED");
+  const laborTotal = counted.reduce((sum, a) => sum + (a.laborValue ?? 0), 0);
+  const partsTotal = counted.reduce((sum, a) => sum + (a.partsValue ?? 0), 0);
+  const problemsTotal = counted.reduce((sum, a) => sum + (a.estimatedValue ?? 0), 0);
+  const estimate = problemsTotal ? 0 : (order.estimatedMin ?? 0);
+  const extra = order.deliveryExtraValue ?? 0;
+  return { laborTotal, partsTotal, problemsTotal, estimate, extra, total: (problemsTotal || estimate) + extra };
+}
+
 export async function buildServiceOrderReportPdf(orderId: string): Promise<Buffer> {
   return renderServiceOrderReportPdf(await loadReportOrder(orderId));
 }
@@ -160,13 +177,14 @@ export function renderServiceOrderReportPdf(order: ReportOrder): Promise<Buffer>
     ],
     order.approvals.map((approval) => {
       const part = approval.partId ? order.parts.find((p) => p.id === approval.partId) : undefined;
-      const status = part
-        ? (PART_STATUS_LABELS[part.status] ?? part.status)
-        : approval.status === "APPROVED"
-          ? "Aprovado"
-          : approval.status === "REJECTED"
-            ? "Recusado"
-            : "Pendente";
+      const status =
+        approval.status === "REJECTED"
+          ? "Recusado (não soma)"
+          : part
+            ? (PART_STATUS_LABELS[part.status] ?? part.status)
+            : approval.status === "APPROVED"
+              ? "Aprovado"
+              : "Pendente";
       const parts = approval.partUsages.length
         ? approval.partUsages.map((usage) => `${usage.quantity}x ${usage.inventoryPart.name}`).join(", ")
         : "Sem peça vinculada";
@@ -182,15 +200,17 @@ export function renderServiceOrderReportPdf(order: ReportOrder): Promise<Buffer>
     "Nenhum valor de serviço registrado."
   );
 
-  const servicesTotal = order.approvals.reduce((sum, a) => sum + (a.estimatedValue ?? 0), 0) || order.estimatedMin || 0;
-  const total = servicesTotal + (order.deliveryExtraValue ?? 0);
-  if (order.deliveryExtraValue) {
-    doc.font("Helvetica").fontSize(9).fillColor("#555").text(`Valor extra na entrega: ${currency(order.deliveryExtraValue)}`, MARGIN, undefined, { width, align: "right" });
+  const values = projectValues(order);
+  doc.font("Helvetica").fontSize(9).fillColor("#555");
+  if (order.approvals.length) {
+    doc.text(`Mão de obra: ${currency(values.laborTotal)} · Peças: ${currency(values.partsTotal)}`, MARGIN, undefined, { width, align: "right" });
   }
+  if (values.estimate) doc.text(`Valor estimado na abertura: ${currency(values.estimate)}`, MARGIN, undefined, { width, align: "right" });
+  if (values.extra) doc.text(`Valor extra na entrega: ${currency(values.extra)}`, MARGIN, undefined, { width, align: "right" });
   if (order.deliveryDescription) {
     doc.font("Helvetica").fontSize(9).fillColor("#555").text(`Observação da entrega: ${order.deliveryDescription}`, MARGIN, undefined, { width });
   }
-  doc.moveDown(0.5).font("Helvetica-Bold").fontSize(14).fillColor("#111").text(`Valor final: ${currency(total)}`, MARGIN, undefined, { width, align: "right" });
+  doc.moveDown(0.5).font("Helvetica-Bold").fontSize(14).fillColor("#111").text(`Valor final: ${currency(values.total)}`, MARGIN, undefined, { width, align: "right" });
 
   doc.end();
   return done;
