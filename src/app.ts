@@ -48,6 +48,7 @@ import { searchRouter } from "@/routes/search.routes";
 import { trucksRouter } from "@/routes/trucks.routes";
 import { teamRouter } from "@/routes/team.routes";
 import { publicRouter } from "@/routes/public.routes";
+import { whatsappRouter } from "@/routes/whatsapp.routes";
 
 export const app = express();
 
@@ -112,6 +113,7 @@ app.use("/api/document-templates", documentTemplatesRouter);
 app.use("/api/search", searchRouter);
 app.use("/api/trucks", trucksRouter);
 app.use("/api/public", publicRouter);
+app.use("/api/whatsapp", whatsappRouter);
 
 app.use((_req, res) => res.status(404).json({ error: "Rota não encontrada." }));
 

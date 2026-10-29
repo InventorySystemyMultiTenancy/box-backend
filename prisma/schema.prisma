@@ -1197,3 +1197,34 @@ model TruckRefueling {
   notes         String?
   createdAt     DateTime  @default(now())
 }
+
+// Avisos automáticos no WhatsApp (Evolution API, configurada por variáveis de ambiente —
+// ver whatsapp.service.ts). Um aviso por projeto, tipo e número: finalizar de novo não
+// repete a mensagem. Saem da fila um por vez, com pausa entre eles.
+model WhatsappMessage {
+  id             String    @id @default(cuid())
+  serviceOrderId String
+  kind           String // TEAM (equipe: WHATSAPP_NOTIFY_NUMBERS) | CLIENT (dono do veículo)
+  recipientName  String?
+  phone          String
+  // 55 + DDD + 8 últimos dígitos — o mesmo número com ou sem o 9º dígito.
+  phoneKey       String
+  text           String
+  status         String    @default("QUEUED") // QUEUED | SENDING | SENT | ERROR | DISCARDED
+  attempts       Int       @default(0)
+  error          String?
+  sentAt         DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([serviceOrderId, kind, phoneKey])
+  @@index([status, createdAt])
+  @@index([phoneKey])
+}
+
+// Números que responderam SAIR (VOLTAR remove daqui).
+model WhatsappOptOut {
+  phoneKey  String   @id
+  phone     String?
+  createdAt DateTime @default(now())
+}

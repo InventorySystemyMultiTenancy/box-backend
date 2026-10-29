@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder, serviceOrderVisibilityFilter } from "@/lib/authorization";
 import { vehicleIdsMatchingPlate } from "@/lib/plate-search";
+import { notifyOrderReady } from "@/services/whatsapp.service";
 import { emitToOrder } from "@/sockets";
 import { SERVICE_ORDER_STATUSES, STATUS_PROGRESS, STATUS_LABELS, SERVICE_ORDER_PRIORITIES, RETIRED_SERVICE_ORDER_STATUSES, MAX_DAMAGE_PHOTOS, MAX_DAMAGE_VIDEOS } from "@/lib/constants";
 import { nextOrderCode } from "@/lib/order-code";
@@ -510,6 +511,8 @@ serviceOrdersRouter.patch(
     });
     // Chegou em "Finalizado": sai do andamento, então os alertas do projeto saem também.
     if (order.status === "FINISHED") await clearServiceOrderAlerts(prisma, order.id);
+    // Aviso de veículo pronto no WhatsApp (equipe + cliente) — em segundo plano.
+    if (order.status === "FINISHED" && statusChanged) void notifyOrderReady(order.id, req.user!.id);
 
     emitToOrder(order.id, "status:update", { orderId: order.id, status: order.status, progress: order.progress });
     if (event) emitToOrder(order.id, "timeline:new", { event });
@@ -610,6 +613,9 @@ serviceOrdersRouter.patch(
     } catch (err) {
       console.error("Falha ao gerar o PDF de finalização", err);
     }
+
+    // Aviso de veículo pronto no WhatsApp (equipe + cliente) — em segundo plano.
+    void notifyOrderReady(order.id, req.user!.id);
 
     const finalized = await prisma.serviceOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
     emitToOrder(finalized.id, "status:update", { orderId: finalized.id, status: finalized.status, progress: finalized.progress });

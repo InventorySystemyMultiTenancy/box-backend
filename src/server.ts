@@ -4,6 +4,7 @@ import { app } from "@/app";
 import { initSockets } from "@/sockets";
 import { startScheduler } from "@/jobs/scheduler";
 import { mailProvider } from "@/services/mailer.service";
+import { startWhatsappQueue } from "@/services/whatsapp.service";
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -15,4 +16,5 @@ httpServer.listen(PORT, () => {
   const mail = mailProvider();
   console.log(mail ? `E-mail: envio via ${mail}` : "E-mail: NÃO configurado (RESEND_API_KEY, BREVO_API_KEY ou SMTP_HOST) — links de senha só no log");
   startScheduler();
+  startWhatsappQueue();
 });
