@@ -166,6 +166,49 @@ partsRouter.patch(
   }
 );
 
+const laborSchema = z.object({ laborValue: z.number().min(0) });
+
+// "Valores do projeto": corrige só a mão de obra de QUALQUER problema (com ou sem peça,
+// já aprovado, recusado ou concluído) — não mexe em status nem reabre aprovação.
+partsRouter.patch(
+  "/problems/:approvalId/labor",
+  requireAuth,
+  requireRole("ADMIN"),
+  async (req: AuthedRequest<{ orderId: string; approvalId: string }>, res) => {
+    const parsed = laborSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Valor inválido.", details: parsed.error.flatten() });
+
+    const existing = await prisma.approval.findUnique({ where: { id: req.params.approvalId } });
+    if (!existing || existing.serviceOrderId !== req.params.orderId) {
+      return res.status(404).json({ error: "Problema não encontrado nesta ordem." });
+    }
+
+    const before = Number(existing.laborValue ?? 0);
+    const laborValue = roundMoney(parsed.data.laborValue);
+    const result = await prisma.$transaction(async (tx) => {
+      const approval = await tx.approval.update({
+        where: { id: existing.id },
+        data: { laborValue, estimatedValue: roundMoney(laborValue + Number(existing.partsValue ?? 0)) },
+        include: { media: true, partUsages: { include: { inventoryPart: true } } },
+      });
+      const event = await tx.timelineEvent.create({
+        data: {
+          serviceOrderId: req.params.orderId,
+          title: "Mão de obra alterada",
+          description: `${existing.description}: R$ ${before.toFixed(2)} → R$ ${laborValue.toFixed(2)}`,
+          authorId: req.user!.id,
+        },
+        include: { media: true, author: { select: { name: true } } },
+      });
+      return { approval, event };
+    });
+
+    emitToOrder(req.params.orderId, "approval:update", { approval: result.approval });
+    emitToOrder(req.params.orderId, "timeline:new", { event: result.event });
+    res.json(result);
+  }
+);
+
 const priceProblemSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().min(4).optional(),

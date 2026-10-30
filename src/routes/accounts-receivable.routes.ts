@@ -35,6 +35,7 @@ const receiveSchema = z.object({
   receivedAmount: z.number().positive().optional(),
   bankAccountId: z.string().optional(),
   paymentMethod: z.string().optional(),
+  payer: z.enum(["LOCALIZA", "PESSOA_JURIDICA", "EDENRED", "PLATAFORMA", "SEGURADORA"]).optional(),
   // Nota fiscal do recebimento: associar uma existente ou criar uma nova ligada à conta.
   invoiceId: z.string().optional(),
   newInvoice: z

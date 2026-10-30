@@ -232,6 +232,8 @@ model AccountReceivable {
   receivedAmount    Decimal?      @db.Decimal(12, 2)
   status            String        @default("PENDING") // PENDING | RECEIVED | OVERDUE | CANCELLED
   paymentMethod     String?
+  // Quem pagou (informado ao receber): LOCALIZA | PESSOA_JURIDICA | EDENRED | PLATAFORMA | SEGURADORA
+  payer             String?
   bankAccountId     String?
   bankAccount       BankAccount?  @relation(fields: [bankAccountId], references: [id])
   installmentNumber Int?

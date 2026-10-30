@@ -37,6 +37,7 @@ export interface ReceiveInput {
   receivedAmount?: number;
   bankAccountId?: string;
   paymentMethod?: string;
+  payer?: string;
   // Nota fiscal do recebimento: liga uma nota já cadastrada...
   invoiceId?: string;
   // ...ou cria a nota ali mesmo (emitida pela oficina), já ligada a esta conta.
@@ -265,6 +266,7 @@ export async function receiveAccountReceivable(id: string, input: ReceiveInput) 
         receivedAmount,
         bankAccountId: input.bankAccountId ?? receivable.bankAccountId,
         paymentMethod,
+        payer: input.payer ?? receivable.payer,
       },
     }),
     ...(input.invoiceId ? [prisma.invoice.update({ where: { id: input.invoiceId }, data: { accountReceivableId: id } })] : []),
