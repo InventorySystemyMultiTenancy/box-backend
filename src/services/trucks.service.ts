@@ -156,16 +156,54 @@ export async function listTrips(truckId: string) {
 // Histórico de pilotagens/devoluções de todos os caminhões — aba "Movimentações".
 // Admin vê tudo; demais usuários só veem os caminhões em que estão designados,
 // espelhando o mesmo recorte já usado em listTrucksAssignedTo.
-export async function listAllTripMovements(role: string, userId: string, take = 100) {
-  return prisma.truckTrip.findMany({
-    where: role === "ADMIN" ? {} : { truck: { assignedEmployeeId: userId } },
-    orderBy: { startedAt: "desc" },
-    take,
-    include: {
-      driver: { select: { id: true, name: true } },
-      truck: { select: { id: true, plate: true, brand: true, model: true } },
-    },
-  });
+export interface TruckListPage {
+  skip: number;
+  take: number;
+  q?: string;
+}
+
+// Busca das abas Movimentações/Abastecimentos: placa, marca, modelo do caminhão, motorista
+// ou o dia ("12/05" ou "12/05/2026", horário de Brasília) no campo de data da lista.
+export function truckListSearch(q: string | undefined, dateField: "startedAt" | "createdAt", now = new Date()) {
+  const term = q?.trim();
+  if (!term) return {};
+  const date = term.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?$/);
+  if (date) {
+    const year = date[3] ? (date[3].length === 2 ? 2000 + Number(date[3]) : Number(date[3])) : now.getFullYear();
+    const start = new Date(Date.UTC(year, Number(date[2]) - 1, Number(date[1]), 3));
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    return { [dateField]: { gte: start, lt: end } };
+  }
+  const contains = { contains: term, mode: "insensitive" as const };
+  return {
+    OR: [
+      { truck: { plate: contains } },
+      { truck: { brand: contains } },
+      { truck: { model: contains } },
+      { driver: { name: contains } },
+    ],
+  };
+}
+
+export async function listAllTripMovements(role: string, userId: string, page: TruckListPage) {
+  const where = {
+    ...(role === "ADMIN" ? {} : { truck: { assignedEmployeeId: userId } }),
+    ...truckListSearch(page.q, "startedAt"),
+  };
+  const [items, total] = await Promise.all([
+    prisma.truckTrip.findMany({
+      where,
+      orderBy: { startedAt: "desc" },
+      skip: page.skip,
+      take: page.take,
+      include: {
+        driver: { select: { id: true, name: true } },
+        truck: { select: { id: true, plate: true, brand: true, model: true } },
+      },
+    }),
+    prisma.truckTrip.count({ where }),
+  ]);
+  return { items, total };
 }
 
 // --- Abastecimentos ----------------------------------------------------------
@@ -239,13 +277,16 @@ export async function listRefuelings(truckId: string) {
 
 // Todos os abastecimentos de todos os caminhões — aba "Abastecimentos". Mesmo
 // recorte de visibilidade das demais listagens de caminhão (admin vê tudo).
-export async function listAllRefuelings(role: string, userId: string, take = 100) {
-  return prisma.truckRefueling.findMany({
-    where: role === "ADMIN" ? {} : { truck: { assignedEmployeeId: userId } },
-    orderBy: { createdAt: "desc" },
-    take,
-    include: refuelingInclude,
-  });
+export async function listAllRefuelings(role: string, userId: string, page: TruckListPage) {
+  const where = {
+    ...(role === "ADMIN" ? {} : { truck: { assignedEmployeeId: userId } }),
+    ...truckListSearch(page.q, "createdAt"),
+  };
+  const [items, total] = await Promise.all([
+    prisma.truckRefueling.findMany({ where, orderBy: { createdAt: "desc" }, skip: page.skip, take: page.take, include: refuelingInclude }),
+    prisma.truckRefueling.count({ where }),
+  ]);
+  return { items, total };
 }
 
 export interface ConsumptionAlert {

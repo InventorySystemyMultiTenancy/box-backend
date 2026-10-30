@@ -6,7 +6,8 @@ export interface PageParams {
 }
 
 const DEFAULT_PAGE_SIZE = 20;
-const MAX_PAGE_SIZE = 100;
+// "Ver mais" das listas do site pede tudo numa página só (ALL_PAGE_SIZE no frontend).
+const MAX_PAGE_SIZE = 1000;
 
 export function parsePageParams(query: Record<string, unknown>): PageParams {
   const page = Math.max(1, Number(query.page) || 1);

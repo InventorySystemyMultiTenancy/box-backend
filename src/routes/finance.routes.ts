@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { parsePageParams } from "@/lib/pagination";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { requirePermission } from "@/middleware/permissions";
 import { getCashFlow, getDRE, endOfPeriod } from "@/services/cash-flow.service";
@@ -184,17 +185,27 @@ financeRouter.get("/my-expenses", requireAuth, requireRole("MECHANIC", "ADMIN"),
   // meia-noite dele.
   const toExclusive = to ? new Date(new Date(to).getTime() + 24 * 60 * 60 * 1000) : undefined;
 
-  const entries = await prisma.financialEntry.findMany({
-    where: {
-      createdById: everyone ? { not: null } : req.user!.id,
-      type: "EXPENSE",
-      ...(from || toExclusive ? { occurredAt: { ...(from ? { gte: new Date(from) } : {}), ...(toExclusive ? { lt: toExclusive } : {}) } } : {}),
-    },
-    orderBy: { occurredAt: "desc" },
-    include: { createdBy: { select: { id: true, name: true } } },
-  });
+  const where = {
+    createdById: everyone ? { not: null } : req.user!.id,
+    type: "EXPENSE",
+    ...(from || toExclusive ? { occurredAt: { ...(from ? { gte: new Date(from) } : {}), ...(toExclusive ? { lt: toExclusive } : {}) } } : {}),
+  };
+  // Com pageSize (lista da aba): só a página pedida; total e quantidade vêm do período
+  // inteiro. Sem pageSize (relatório em PDF): todos.
+  const page = req.query.pageSize ? parsePageParams(req.query as Record<string, unknown>) : null;
 
-  res.json({ entries, total: entries.reduce((sum, e) => sum + e.amount, 0) });
+  const [entries, sum, count] = await Promise.all([
+    prisma.financialEntry.findMany({
+      where,
+      orderBy: { occurredAt: "desc" },
+      include: { createdBy: { select: { id: true, name: true } } },
+      ...(page ? { skip: page.skip, take: page.take } : {}),
+    }),
+    prisma.financialEntry.aggregate({ where, _sum: { amount: true } }),
+    prisma.financialEntry.count({ where }),
+  ]);
+
+  res.json({ entries, total: sum._sum.amount ?? 0, count });
 });
 
 financeRouter.patch("/expenses/:id", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {

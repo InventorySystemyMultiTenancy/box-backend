@@ -2,6 +2,7 @@ import fs from "fs";
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
+import { parsePageParams, paginated } from "@/lib/pagination";
 import { upload, persistUploadedFile } from "@/middleware/upload";
 import {
   listTrucks,
@@ -47,15 +48,20 @@ trucksRouter.get("/assigned-to-me", requireAuth, requireRole("MECHANIC", "ADMIN"
 // Histórico de pilotagens/devoluções de todos os caminhões (aba "Movimentações") —
 // precisa vir antes de "/:id" para "movements" não ser interpretado como um id.
 trucksRouter.get("/movements", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
-  const trips = await listAllTripMovements(req.user!.role, req.user!.id);
-  res.json({ trips });
+  // Paginado (10 na tela, "Ver mais" pede o resto) e com busca no servidor (?q=).
+  const page = parsePageParams(req.query as Record<string, unknown>);
+  const q = typeof req.query.q === "string" ? req.query.q : undefined;
+  const { items, total } = await listAllTripMovements(req.user!.role, req.user!.id, { ...page, q });
+  res.json({ trips: items, pagination: paginated(items, total, page).pagination });
 });
 
 // Todos os abastecimentos de todos os caminhões (aba "Abastecimentos") — também
 // precisa vir antes de "/:id".
 trucksRouter.get("/refuelings", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest, res) => {
-  const refuelings = await listAllRefuelings(req.user!.role, req.user!.id);
-  res.json({ refuelings: await withAlertsForAdmin(refuelings, req.user!.role) });
+  const page = parsePageParams(req.query as Record<string, unknown>);
+  const q = typeof req.query.q === "string" ? req.query.q : undefined;
+  const { items, total } = await listAllRefuelings(req.user!.role, req.user!.id, { ...page, q });
+  res.json({ refuelings: await withAlertsForAdmin(items, req.user!.role), pagination: paginated(items, total, page).pagination });
 });
 
 // Leitura por IA do painel do caminhão (hodômetro + combustível) — usada ao iniciar
