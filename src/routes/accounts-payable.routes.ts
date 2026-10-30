@@ -13,7 +13,15 @@ import {
   payableDueWarnings,
   PayableError,
 } from "@/services/accounts-payable.service";
-import { listExpenseClassifications } from "@/services/expense-classifications.service";
+import {
+  createExpenseCategory,
+  createExpenseGroup,
+  deleteExpenseCategory,
+  deleteExpenseGroup,
+  listExpenseClassifications,
+  renameExpenseCategory,
+  renameExpenseGroup,
+} from "@/services/expense-classifications.service";
 
 export const accountsPayableRouter = Router();
 
@@ -92,6 +100,51 @@ const updateSchema = z.object({
 // Classificações já usadas (categoria, grupo, descrição por grupo, setor) — sugestões dos
 // formulários de conta a pagar e de nota fiscal de despesa.
 accountsPayableRouter.get("/classifications", requireAuth, async (_req, res) => {
+  res.json(await listExpenseClassifications());
+});
+
+// "Grupos e categorias": cadastro dos grupos de despesa e das categorias de cada grupo.
+// Toda alteração devolve as classificações atualizadas.
+const nameSchema = z.object({ name: z.string().min(1) });
+const renameSchema = z.object({ oldName: z.string().min(1), name: z.string().min(1) });
+const categorySchema = z.object({ group: z.string().min(1), name: z.string().min(1) });
+const manageFinance = [requireAuth, requirePermission("finance", "manage")];
+
+accountsPayableRouter.post("/classifications/groups", ...manageFinance, async (req, res) => {
+  const parsed = nameSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Informe o nome do grupo." });
+  await createExpenseGroup(parsed.data.name);
+  res.status(201).json(await listExpenseClassifications());
+});
+
+accountsPayableRouter.patch("/classifications/groups", ...manageFinance, async (req, res) => {
+  const parsed = renameSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Informe o nome do grupo." });
+  await renameExpenseGroup(parsed.data.oldName, parsed.data.name);
+  res.json(await listExpenseClassifications());
+});
+
+accountsPayableRouter.delete("/classifications/groups", ...manageFinance, async (req, res) => {
+  await deleteExpenseGroup(String(req.query.name ?? ""));
+  res.json(await listExpenseClassifications());
+});
+
+accountsPayableRouter.post("/classifications/categories", ...manageFinance, async (req, res) => {
+  const parsed = categorySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Informe o grupo e o nome da categoria." });
+  await createExpenseCategory(parsed.data.group, parsed.data.name);
+  res.status(201).json(await listExpenseClassifications());
+});
+
+accountsPayableRouter.patch("/classifications/categories", ...manageFinance, async (req, res) => {
+  const parsed = renameSchema.extend({ group: z.string().min(1) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Informe o grupo e o nome da categoria." });
+  await renameExpenseCategory(parsed.data.group, parsed.data.oldName, parsed.data.name);
+  res.json(await listExpenseClassifications());
+});
+
+accountsPayableRouter.delete("/classifications/categories", ...manageFinance, async (req, res) => {
+  await deleteExpenseCategory(String(req.query.group ?? ""), String(req.query.name ?? ""));
   res.json(await listExpenseClassifications());
 });
 
