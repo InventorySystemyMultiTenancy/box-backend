@@ -59,6 +59,23 @@ function drawTable(doc: PDFKit.PDFDocument, columns: Column[], rows: string[][],
   doc.moveDown(0.5);
 }
 
+// Rodapé de todas as páginas: "Página X de N", na sequência do relatório.
+export function numberPages(doc: PDFKit.PDFDocument) {
+  const { start, count } = doc.bufferedPageRange();
+  for (let i = start; i < start + count; i++) {
+    doc.switchToPage(i);
+    // Sem margem de baixo enquanto escreve no rodapé — senão o pdfkit cria outra página.
+    const bottom = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+    doc
+      .font("Helvetica")
+      .fontSize(8)
+      .fillColor("#777")
+      .text(`Página ${i - start + 1} de ${count}`, MARGIN, doc.page.height - MARGIN / 2 - 6, { width: doc.page.width - MARGIN * 2, align: "center", lineBreak: false });
+    doc.page.margins.bottom = bottom;
+  }
+}
+
 function heading(doc: PDFKit.PDFDocument, text: string) {
   if (doc.y > doc.page.height - MARGIN - 60) doc.addPage();
   doc.moveDown(0.8).font("Helvetica-Bold").fontSize(13).fillColor("#111").text(text, MARGIN);
@@ -101,7 +118,8 @@ export async function buildServiceOrderReportPdf(orderId: string): Promise<Buffe
 }
 
 export function renderServiceOrderReportPdf(order: ReportOrder): Promise<Buffer> {
-  const doc = new PDFDocument({ size: "A4", margin: MARGIN });
+  // bufferPages: as páginas ficam em memória até o fim, para numerar "Página X de N".
+  const doc = new PDFDocument({ size: "A4", margin: MARGIN, bufferPages: true });
   const chunks: Buffer[] = [];
   doc.on("data", (chunk: Buffer) => chunks.push(chunk));
   const done = new Promise<Buffer>((resolve, reject) => {
@@ -212,6 +230,7 @@ export function renderServiceOrderReportPdf(order: ReportOrder): Promise<Buffer>
   }
   doc.moveDown(0.5).font("Helvetica-Bold").fontSize(14).fillColor("#111").text(`Valor final: ${currency(values.total)}`, MARGIN, undefined, { width, align: "right" });
 
+  numberPages(doc);
   doc.end();
   return done;
 }

@@ -3,6 +3,13 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { parsePageParams, paginated } from "@/lib/pagination";
+import { getRefuelingReport } from "@/services/truck-refueling-report.service";
+
+const refuelingReportSchema = z.object({
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  truckId: z.string().min(1).optional(),
+});
 import { upload, persistUploadedFile } from "@/middleware/upload";
 import {
   listTrucks,
@@ -62,6 +69,14 @@ trucksRouter.get("/refuelings", requireAuth, requireRole("MECHANIC", "ADMIN"), a
   const q = typeof req.query.q === "string" ? req.query.q : undefined;
   const { items, total } = await listAllRefuelings(req.user!.role, req.user!.id, { ...page, q });
   res.json({ refuelings: await withAlertsForAdmin(items, req.user!.role), pagination: paginated(items, total, page).pagination });
+});
+
+// Relatório de abastecimentos do período (?from=AAAA-MM-DD&to=AAAA-MM-DD[&truckId=]) —
+// só admin (gastos da frota). As contas ficam no service; o PDF é montado no frontend.
+trucksRouter.get("/refuelings/report", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const parsed = refuelingReportSchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: "Informe o período do relatório." });
+  res.json({ report: await getRefuelingReport(parsed.data) });
 });
 
 // Leitura por IA do painel do caminhão (hodômetro + combustível) — usada ao iniciar
