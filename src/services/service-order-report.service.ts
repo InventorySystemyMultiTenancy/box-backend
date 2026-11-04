@@ -90,8 +90,17 @@ function loadReportOrder(orderId: string) {
       parts: { orderBy: { createdAt: "asc" }, include: { responsible: { select: { name: true } } } },
       approvals: { orderBy: { createdAt: "asc" }, include: { partUsages: { include: { inventoryPart: { select: { name: true } } } } } },
       assignees: { orderBy: { createdAt: "asc" }, include: { user: { select: { name: true } } } },
+      timelineEvents: {
+        where: { note: { not: null } },
+        orderBy: { occurredAt: "asc" },
+        include: { author: { select: { name: true } } },
+      },
     },
   });
+}
+
+function formatDateTime(date: Date) {
+  return date.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" });
 }
 
 export type ReportOrder = Awaited<ReturnType<typeof loadReportOrder>>;
@@ -225,10 +234,29 @@ export function renderServiceOrderReportPdf(order: ReportOrder): Promise<Buffer>
   }
   if (values.estimate) doc.text(`Valor estimado na abertura: ${currency(values.estimate)}`, MARGIN, undefined, { width, align: "right" });
   if (values.extra) doc.text(`Valor extra na entrega: ${currency(values.extra)}`, MARGIN, undefined, { width, align: "right" });
-  if (order.deliveryDescription) {
-    doc.font("Helvetica").fontSize(9).fillColor("#555").text(`Observação da entrega: ${order.deliveryDescription}`, MARGIN, undefined, { width });
-  }
   doc.moveDown(0.5).font("Helvetica-Bold").fontSize(14).fillColor("#111").text(`Valor final: ${currency(values.total)}`, MARGIN, undefined, { width, align: "right" });
+
+  // Observações digitadas ao avançar etapa / finalizar a entrega, com a data em que foram
+  // registradas. Projeto entregue antes de existir a timeline com observação: usa a
+  // descrição da entrega com a data de conclusão.
+  const notes = order.timelineEvents.map((event) => ({
+    date: event.occurredAt,
+    title: event.title,
+    author: event.author?.name ?? null,
+    text: event.note!,
+  }));
+  if (notes.length === 0 && order.deliveryDescription) {
+    notes.push({ date: order.completedAt ?? order.updatedAt, title: "Entrega do veículo", author: null, text: order.deliveryDescription });
+  }
+  if (notes.length) {
+    heading(doc, "Observações");
+    notes.forEach((note) => {
+      const meta = [formatDateTime(note.date), note.title, note.author].filter(Boolean).join(" · ");
+      doc.font("Helvetica-Bold").fontSize(9).fillColor("#555").text(meta, MARGIN, undefined, { width });
+      doc.font("Helvetica").fontSize(10).fillColor("#111").text(note.text, MARGIN, undefined, { width });
+      doc.moveDown(0.4);
+    });
+  }
 
   numberPages(doc);
   doc.end();

@@ -437,6 +437,8 @@ serviceOrdersRouter.patch("/:id/process", requireAuth, requireRole("MECHANIC", "
 const statusSchema = z.object({
   status: z.enum(SERVICE_ORDER_STATUSES),
   progress: z.coerce.number().min(0).max(100).optional(),
+  // Observação opcional da etapa — vai para a timeline e para o PDF do projeto.
+  note: z.string().trim().max(2000).optional(),
 });
 
 // Avançar etapa — usado tanto pelo drag-and-drop do Kanban (sem foto) quanto pelo
@@ -454,6 +456,7 @@ serviceOrdersRouter.patch(
     if (!parsed.success) return res.status(400).json({ error: "Status inválido.", details: parsed.error.flatten() });
 
     const { status, progress } = parsed.data;
+    const note = parsed.data.note || undefined;
     if (status === "READY_FOR_PICKUP") {
       return res.status(400).json({ error: "Use /api/service-orders/:id/finalize para finalizar e entregar o veículo." });
     }
@@ -478,11 +481,17 @@ serviceOrdersRouter.patch(
       if (statusChanged && status === "FINISHED") await billFinishedOrder(tx, order.id);
 
       let event = null;
-      if (statusChanged || photoUrl) {
+      if (statusChanged || photoUrl || note) {
         event = await tx.timelineEvent.create({
           data: {
             serviceOrderId: order.id,
-            title: statusChanged ? `Etapa avançada: ${STATUS_LABELS[status]}` : `Foto adicionada — ${STATUS_LABELS[status]}`,
+            title: statusChanged
+              ? `Etapa avançada: ${STATUS_LABELS[status]}`
+              : photoUrl
+                ? `Foto adicionada — ${STATUS_LABELS[status]}`
+                : `Observação — ${STATUS_LABELS[status]}`,
+            description: note ? `Observação: ${note}` : undefined,
+            note,
             authorId: req.user!.id,
           },
           include: { media: true, author: { select: { name: true } } },
@@ -599,6 +608,18 @@ serviceOrdersRouter.patch(
         });
       }
 
+      // Entrega na timeline, com a observação digitada (também listada no PDF do projeto).
+      const note = description?.trim() || undefined;
+      await tx.timelineEvent.create({
+        data: {
+          serviceOrderId: order.id,
+          title: `Etapa avançada: ${STATUS_LABELS.READY_FOR_PICKUP}`,
+          description: note ? `Observação: ${note}` : undefined,
+          note,
+          authorId: req.user!.id,
+        },
+      });
+
       // Projeto entregue não é mais pendência — alertas dele saem da aba Alertas.
       await clearServiceOrderAlerts(tx, order.id);
 
@@ -619,6 +640,7 @@ serviceOrdersRouter.patch(
 
     const finalized = await prisma.serviceOrder.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
     emitToOrder(finalized.id, "status:update", { orderId: finalized.id, status: finalized.status, progress: finalized.progress });
+    emitToOrder(finalized.id, "timeline:new", {});
     res.json({ order: finalized, reportUrl });
   }
 );

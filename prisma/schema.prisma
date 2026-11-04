@@ -724,6 +724,8 @@ model TimelineEvent {
   serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id])
   title          String
   description    String?
+  // Observação digitada ao avançar etapa / finalizar a entrega — listada com data no PDF do projeto.
+  note           String?
   occurredAt     DateTime     @default(now())
   done           Boolean      @default(true)
   authorId       String?
