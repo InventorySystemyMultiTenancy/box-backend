@@ -119,6 +119,7 @@ export async function resolvePublicShareLink(token: string) {
       id: e.id,
       title: e.title,
       description: e.description,
+      note: e.note,
       occurredAt: e.occurredAt,
       done: e.done,
       media: e.media.map(mapMedia),
