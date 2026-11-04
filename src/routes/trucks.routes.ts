@@ -209,8 +209,8 @@ trucksRouter.post(
     const startPhotoUrl = await persistUploadedFile(req.file);
 
     try {
-      const trip = await startTrip(req.params.id, req.user!.id, req.user!.role, { ...parsed.data, startPhotoUrl });
-      res.status(201).json({ trip });
+      const { trip, warning } = await startTrip(req.params.id, req.user!.id, req.user!.role, { ...parsed.data, startPhotoUrl });
+      res.status(201).json({ trip, warning });
     } catch (err) {
       if (err instanceof TruckError) return res.status(err.status).json({ error: err.message });
       throw err;

@@ -207,11 +207,15 @@ export const NOTIFICATION_TYPES = [
   "INSPECTION_TODAY",
   "DELIVERY_TOMORROW",
   "PAYABLE_OVERDUE",
+  "TRUCK_KM_REGRESSION",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
 // Nº de dias parado num mesmo status a partir do qual a OS entra no alerta "parada".
 export const STALE_STATUS_ALERT_DAYS = 3;
+
+// Por quantos dias a pilotagem iniciada com km menor que a anterior fica na aba Alertas.
+export const TRUCK_KM_REGRESSION_ALERT_DAYS = 30;
 
 // Checklist de entrada do veículo (avarias que já existiam ao chegar), por projeto.
 export const MAX_DAMAGE_PHOTOS = 20;

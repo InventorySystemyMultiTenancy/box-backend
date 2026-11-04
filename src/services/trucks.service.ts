@@ -88,19 +88,15 @@ export async function startTrip(truckId: string, userId: string, role: string, i
   const openTrip = await prisma.truckTrip.findFirst({ where: { truckId, status: "IN_PROGRESS" } });
   if (openTrip) throw new TruckError("Este caminhão já está em uso — finalize a pilotagem atual antes de iniciar outra.", 409);
 
-  // Km não pode retroceder em relação à última pilotagem DESTE caminhão — cada
-  // caminhão tem sua própria linha do tempo de km, então trocar de caminhão não
-  // é bloqueado por essa checagem.
+  // Km menor que a da última pilotagem DESTE caminhão não bloqueia (pode ser erro de
+  // leitura, troca de painel...): a pilotagem inicia, o motorista recebe o aviso e o
+  // admin vê o alerta TRUCK_KM_REGRESSION na aba Alertas.
   const lastCompleted = await prisma.truckTrip.findFirst({
     where: { truckId, status: "COMPLETED" },
     orderBy: { endedAt: "desc" },
   });
-  if (lastCompleted?.endKm != null && input.startKm < lastCompleted.endKm) {
-    throw new TruckError(
-      `A km informada (${input.startKm}) é menor que a última km registrada para este caminhão (${lastCompleted.endKm}).`,
-      400
-    );
-  }
+  const kmRegressionFrom =
+    lastCompleted?.endKm != null && input.startKm < lastCompleted.endKm ? lastCompleted.endKm : null;
 
   if (input.appointmentId) {
     const appointment = await prisma.appointment.findUnique({ where: { id: input.appointmentId } });
@@ -109,10 +105,15 @@ export async function startTrip(truckId: string, userId: string, role: string, i
     }
   }
 
-  return prisma.truckTrip.create({
-    data: { truckId, driverId: userId, ...input },
+  const trip = await prisma.truckTrip.create({
+    data: { truckId, driverId: userId, ...input, kmRegressionFrom },
     include: { truck: true, driver: { select: { id: true, name: true } }, appointment: true },
   });
+  const warning =
+    kmRegressionFrom != null
+      ? `A km informada (${input.startKm}) é menor que a última km registrada para este caminhão (${kmRegressionFrom}). A pilotagem foi iniciada e o administrador foi alertado.`
+      : null;
+  return { trip, warning };
 }
 
 export interface FinishTripInput {

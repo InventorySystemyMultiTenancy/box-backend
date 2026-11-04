@@ -1,6 +1,6 @@
 import { prisma, AppTx } from "@/lib/prisma";
 import { ReportAccess, canSeeAlertType, canSeeSector } from "@/lib/report-access";
-import { STALE_STATUS_ALERT_DAYS, SUPPLEMENT_PENDING_ALERT_DAYS } from "@/lib/constants";
+import { STALE_STATUS_ALERT_DAYS, SUPPLEMENT_PENDING_ALERT_DAYS, TRUCK_KM_REGRESSION_ALERT_DAYS } from "@/lib/constants";
 
 interface AlertCandidate {
   type: string;
@@ -27,7 +27,9 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
   // dada não é mais pendência da oficina (projeto excluído some sozinho — não existe mais).
   const activeOrder = { archivedAt: null, status: { notIn: ["FINISHED", "READY_FOR_PICKUP"] } };
 
-  const [staleOrders, pendingSupplements, inspectionsToday, deliveriesTomorrow, overduePayables] = await Promise.all([
+  const kmRegressionSince = new Date(now.getTime() - TRUCK_KM_REGRESSION_ALERT_DAYS * 24 * 60 * 60 * 1000);
+
+  const [staleOrders, pendingSupplements, inspectionsToday, deliveriesTomorrow, overduePayables, kmRegressions] = await Promise.all([
     prisma.serviceOrder.findMany({
       where: { ...activeOrder, updatedAt: { lte: staleThreshold } },
       include: { vehicle: true },
@@ -48,6 +50,11 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
     // flip só acontece quando a listagem de contas a pagar é consultada).
     prisma.accountPayable.findMany({
       where: { status: { notIn: ["PAID", "CANCELLED"] }, dueDate: { lt: now } },
+    }),
+    // Pilotagem iniciada com km menor que a da anterior do mesmo caminhão (não bloqueada).
+    prisma.truckTrip.findMany({
+      where: { kmRegressionFrom: { not: null }, startedAt: { gte: kmRegressionSince } },
+      include: { truck: { select: { plate: true } }, driver: { select: { name: true } } },
     }),
   ]);
 
@@ -94,6 +101,15 @@ async function computeCandidates(): Promise<AlertCandidate[]> {
       entity: "AccountPayable",
       entityId: payable.id,
       message: `Conta a pagar vencida há ${days} dia${days === 1 ? "" : "s"} — ${payable.description} (${payable.payeeName}), R$ ${payable.amount.toFixed(2)}.`,
+    });
+  }
+  for (const trip of kmRegressions) {
+    const date = trip.startedAt.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+    candidates.push({
+      type: "TRUCK_KM_REGRESSION",
+      entity: "TruckTrip",
+      entityId: trip.id,
+      message: `Caminhão ${trip.truck.plate}: ${trip.driver.name} iniciou pilotagem em ${date} com km ${trip.startKm}, menor que a última registrada (${trip.kmRegressionFrom}).`,
     });
   }
 

@@ -1161,6 +1161,9 @@ model TruckTrip {
   endCondition   String?
   endPhotoUrl    String?
   notes          String?
+  // Km da pilotagem anterior quando a km de início informada veio MENOR que ela — não
+  // bloqueia o uso do caminhão, só gera aviso pro motorista e alerta pro admin.
+  kmRegressionFrom Int?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
