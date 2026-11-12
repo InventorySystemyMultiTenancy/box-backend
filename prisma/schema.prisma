@@ -624,6 +624,7 @@ model ServiceOrder {
   currentSector   Sector? @relation(fields: [currentSectorId], references: [id])
 
   // Seguro/sinistro (Fase 1) — presentes só quando o atendimento passa por seguradora.
+  hasInsurance        Boolean           @default(false)
   insuranceCompanyId  String?
   insuranceCompany    InsuranceCompany? @relation(fields: [insuranceCompanyId], references: [id])
   claimNumber         String?

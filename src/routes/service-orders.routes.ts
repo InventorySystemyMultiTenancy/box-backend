@@ -153,6 +153,58 @@ const createOrderSchema = z.object({
   ssNumber: z.string().trim().max(50).optional(),
   // Funcionários associados já na criação (só o admin escolhe; quem cria entra sozinho).
   assigneeIds: z.array(z.string()).optional(),
+  // Seguro: seguradora existente (insuranceCompanyId) ou nova (newInsuranceCompanyName) + franquia.
+  hasInsurance: z.boolean().optional(),
+  insuranceCompanyId: z.string().nullable().optional(),
+  newInsuranceCompanyName: z.string().trim().max(120).optional(),
+  deductibleAmount: z.coerce.number().min(0).nullable().optional(),
+});
+
+class InsuranceInputError extends Error {}
+
+/**
+ * Normaliza os dados de seguro do projeto. Sem seguro, limpa seguradora/franquia/sinistro.
+ * Com nome de seguradora nova, reaproveita uma ativa de mesmo nome ou cria o cadastro.
+ */
+async function resolveInsurance(input: {
+  hasInsurance?: boolean;
+  insuranceCompanyId?: string | null;
+  newInsuranceCompanyName?: string;
+  deductibleAmount?: number | null;
+}) {
+  if (input.hasInsurance === undefined) return null;
+  if (!input.hasInsurance) {
+    return { hasInsurance: false, insuranceCompanyId: null, deductibleAmount: null, claimNumber: null, authorizationNumber: null };
+  }
+  let insuranceCompanyId = input.insuranceCompanyId ?? null;
+  const name = input.newInsuranceCompanyName?.trim();
+  if (name) {
+    const existing = await prisma.insuranceCompany.findFirst({
+      where: { active: true, OR: [{ legalName: { equals: name, mode: "insensitive" } }, { tradeName: { equals: name, mode: "insensitive" } }] },
+    });
+    insuranceCompanyId = existing ? existing.id : (await prisma.insuranceCompany.create({ data: { legalName: name } })).id;
+  } else if (insuranceCompanyId) {
+    const company = await prisma.insuranceCompany.findUnique({ where: { id: insuranceCompanyId } });
+    if (!company) throw new InsuranceInputError("Seguradora não encontrada.");
+  }
+  return { hasInsurance: true, insuranceCompanyId, deductibleAmount: input.deductibleAmount ?? null };
+}
+
+function insuranceSummary(order: { hasInsurance: boolean; deductibleAmount: unknown; insuranceCompany?: { legalName: string; tradeName: string | null } | null }) {
+  if (!order.hasInsurance) return "Sem seguro";
+  const company = order.insuranceCompany ? (order.insuranceCompany.tradeName ?? order.insuranceCompany.legalName) : "seguradora não informada";
+  const value = order.deductibleAmount != null ? Number(order.deductibleAmount) : null;
+  return `Com seguro — ${company}${value != null ? ` · franquia ${value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}` : ""}`;
+}
+
+// Seguradoras ativas para o form do projeto (sem exigir a permissão do módulo de seguradoras).
+serviceOrdersRouter.get("/insurance-options", requireAuth, requireRole("MECHANIC", "ADMIN"), async (_req, res) => {
+  const companies = await prisma.insuranceCompany.findMany({
+    where: { active: true },
+    select: { id: true, legalName: true, tradeName: true },
+    orderBy: { legalName: "asc" },
+  });
+  res.json({ companies });
 });
 
 /** Só funcionários ativos (mecânico/admin) podem ser associados a um projeto. */
@@ -175,6 +227,14 @@ serviceOrdersRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), asy
   const assigneeIds = await validStaffIds(req.user!.role === "MECHANIC" ? [req.user!.id, ...requested] : requested);
   if (!assigneeIds) return res.status(400).json({ error: "Funcionário inválido na associação do projeto." });
 
+  let insurance: Awaited<ReturnType<typeof resolveInsurance>>;
+  try {
+    insurance = await resolveInsurance(parsed.data);
+  } catch (err) {
+    if (err instanceof InsuranceInputError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
+
   const code = await nextOrderCode();
   const order = await prisma.serviceOrder.create({
     data: {
@@ -187,6 +247,7 @@ serviceOrdersRouter.post("/", requireAuth, requireRole("MECHANIC", "ADMIN"), asy
       storeId: parsed.data.storeId,
       priority: parsed.data.priority,
       ssNumber: parsed.data.ssNumber || undefined,
+      ...(insurance ?? {}),
       status: "RECEIVED",
       progress: STATUS_PROGRESS.RECEIVED,
       timelineEvents: {
@@ -379,6 +440,8 @@ const processSchema = z.object({
   serviceType: z.string().nullable().optional(),
   authorizationNumber: z.string().nullable().optional(),
   ssNumber: z.string().trim().max(50).nullable().optional(),
+  hasInsurance: z.boolean().optional(),
+  newInsuranceCompanyName: z.string().trim().max(120).optional(),
 });
 
 // Campos de processo (Fase 1 do gap SIGMA): consultor/orçamentista/técnico, prioridade,
@@ -388,10 +451,18 @@ serviceOrdersRouter.patch("/:id/process", requireAuth, requireRole("MECHANIC", "
   const parsed = processSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Dados inválidos.", details: parsed.error.flatten() });
 
-  const before = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
+  const before = await prisma.serviceOrder.findUnique({ where: { id: req.params.id }, include: { insuranceCompany: true } });
   if (!before) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
 
-  const { deliveryForecastAt, ...rest } = parsed.data;
+  const { deliveryForecastAt, hasInsurance, newInsuranceCompanyName, ...rest } = parsed.data;
+  let insurance: Awaited<ReturnType<typeof resolveInsurance>>;
+  try {
+    insurance = await resolveInsurance({ hasInsurance, newInsuranceCompanyName, insuranceCompanyId: rest.insuranceCompanyId, deductibleAmount: rest.deductibleAmount });
+  } catch (err) {
+    if (err instanceof InsuranceInputError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
+  if (insurance) Object.assign(rest, insurance);
   if (rest.ssNumber === "") rest.ssNumber = null;
   const events: { title: string; description?: string }[] = [];
 
@@ -421,7 +492,13 @@ serviceOrdersRouter.patch("/:id/process", requireAuth, requireRole("MECHANIC", "
     const updated = await tx.serviceOrder.update({
       where: { id: req.params.id },
       data: { ...rest, ...(deliveryForecastAt !== undefined ? { deliveryForecastAt: deliveryForecastAt ? new Date(deliveryForecastAt) : null } : {}) },
+      include: { insuranceCompany: true },
     });
+    if (insurance) {
+      const from = insuranceSummary(before);
+      const to = insuranceSummary(updated);
+      if (from !== to) events.push({ title: "Dados de seguro alterados", description: `${from} → ${to}` });
+    }
     for (const event of events) {
       await tx.timelineEvent.create({
         data: { serviceOrderId: updated.id, title: event.title, description: event.description, authorId: req.user!.id },
