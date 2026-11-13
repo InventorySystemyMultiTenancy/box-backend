@@ -150,7 +150,7 @@ export async function listAccountsReceivable(query: Record<string, unknown>) {
     bankAccount: true,
     client: true,
     // SS e data de finalização da OS (colunas "SS" e "Data" da lista).
-    serviceOrder: { select: { id: true, code: true, ssNumber: true, completedAt: true } },
+    serviceOrder: { select: { id: true, code: true, ssNumber: true, completedAt: true, insuranceCompany: { select: { legalName: true, tradeName: true } } } },
     // Nota fiscal do recebimento (coluna "Nota" da lista).
     invoices: { where: { status: { not: "CANCELLED" } }, select: { id: true, number: true } },
   };

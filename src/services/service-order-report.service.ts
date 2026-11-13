@@ -112,14 +112,23 @@ type ValueSource = { status: string; laborValue: number | null; partsValue: numb
  * valor lançado, vale o estimado da abertura. Mesma regra do quadro "Valores do projeto"
  * (projectValues em box-frontend/src/lib/order-values.ts).
  */
-export function projectValues(order: { approvals: ValueSource[]; estimatedMin: number | null; deliveryExtraValue: number | null }) {
+export function projectValues(order: {
+  approvals: ValueSource[];
+  estimatedMin: number | null;
+  deliveryExtraValue: number | null;
+  hasInsurance?: boolean;
+  deductibleAmount?: number | null;
+}) {
   const counted = order.approvals.filter((a) => a.status !== "REJECTED");
   const laborTotal = counted.reduce((sum, a) => sum + (a.laborValue ?? 0), 0);
   const partsTotal = counted.reduce((sum, a) => sum + (a.partsValue ?? 0), 0);
   const problemsTotal = counted.reduce((sum, a) => sum + (a.estimatedValue ?? 0), 0);
   const estimate = problemsTotal ? 0 : (order.estimatedMin ?? 0);
   const extra = order.deliveryExtraValue ?? 0;
-  return { laborTotal, partsTotal, problemsTotal, estimate, extra, total: (problemsTotal || estimate) + extra };
+  const gross = (problemsTotal || estimate) + extra;
+  // Franquia do seguro: sai do total — o valor final é o que o cliente paga.
+  const deductible = order.hasInsurance ? Math.min(gross, Math.max(0, order.deductibleAmount ?? 0)) : 0;
+  return { laborTotal, partsTotal, problemsTotal, estimate, extra, gross, deductible, total: gross - deductible };
 }
 
 export async function buildServiceOrderReportPdf(orderId: string): Promise<Buffer> {
@@ -234,6 +243,10 @@ export function renderServiceOrderReportPdf(order: ReportOrder): Promise<Buffer>
   }
   if (values.estimate) doc.text(`Valor estimado na abertura: ${currency(values.estimate)}`, MARGIN, undefined, { width, align: "right" });
   if (values.extra) doc.text(`Valor extra na entrega: ${currency(values.extra)}`, MARGIN, undefined, { width, align: "right" });
+  if (values.deductible) {
+    doc.text(`Valor total do projeto: ${currency(values.gross)}`, MARGIN, undefined, { width, align: "right" });
+    doc.text(`Franquia do seguro (desconto): - ${currency(values.deductible)}`, MARGIN, undefined, { width, align: "right" });
+  }
   doc.moveDown(0.5).font("Helvetica-Bold").fontSize(14).fillColor("#111").text(`Valor final: ${currency(values.total)}`, MARGIN, undefined, { width, align: "right" });
 
   // Observações digitadas ao avançar etapa / finalizar a entrega, com a data em que foram

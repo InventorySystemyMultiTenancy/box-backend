@@ -8,7 +8,7 @@ import type { ITXClientDenyList } from "@prisma/client/runtime/library";
 // Ao adicionar um novo campo Decimal no schema, inclua-o aqui também.
 export const MONEY_FIELDS = {
   accountPayable: ["amount", "paidAmount"],
-  accountReceivable: ["amount", "receivedAmount"],
+  accountReceivable: ["amount", "receivedAmount", "orderGrossAmount", "deductibleAmount"],
   invoice: ["totalAmount", "discountAmount", "taxAmount"],
   counterSale: ["totalAmount"],
   counterSaleItem: ["unitPrice"],

@@ -90,10 +90,20 @@ interface BillableApproval {
  * problema precificado, cai no valor inicial estimado. O valor extra da entrega soma por fora.
  */
 export function orderBillingTotal(approvals: BillableApproval[], estimatedMin: number | null, extraValue = 0) {
+  return orderBilling(approvals, estimatedMin, extraValue, 0).total;
+}
+
+/**
+ * Cobrança da OS: bruto (serviços + extra da entrega) menos a franquia do seguro — o que o
+ * cliente paga. A franquia nunca deixa o valor negativo.
+ */
+export function orderBilling(approvals: BillableApproval[], estimatedMin: number | null, extraValue = 0, deductible = 0) {
   const done = approvals
     .filter((a) => a.status !== "REJECTED" && a.part?.status === "DONE")
     .reduce((sum, a) => sum + (a.estimatedValue ?? 0), 0);
-  return roundMoney((done || estimatedMin || 0) + (extraValue || 0));
+  const gross = roundMoney((done || estimatedMin || 0) + (extraValue || 0));
+  const discount = roundMoney(Math.min(gross, Math.max(0, deductible || 0)));
+  return { gross, deductible: discount, total: roundMoney(gross - discount) };
 }
 
 // Categorias de FinancialEntry que a entrega da OS gerava antes de passar a criar conta a

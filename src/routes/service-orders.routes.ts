@@ -12,7 +12,7 @@ import { parsePageParams, paginated } from "@/lib/pagination";
 import { upload, uploadDamageMedia, persistUploadedFile, guessMediaType } from "@/middleware/upload";
 import { recordAudit } from "@/services/audit.service";
 import { createOrGetShareLink, revokeShareLink, getActiveShareLink, ShareLinkError } from "@/services/share-link.service";
-import { BILLABLE_ORDER_INCLUDE, billFinishedOrder, billOrderOnDelivery } from "@/services/service-order-billing.service";
+import { BILLABLE_ORDER_INCLUDE, billFinishedOrder, billOrderOnDelivery, resyncOrderReceivables } from "@/services/service-order-billing.service";
 import { clearServiceOrderAlerts } from "@/services/alerts.service";
 import { saveServiceOrderReportPdf } from "@/services/service-order-report.service";
 export const serviceOrdersRouter = Router();
@@ -497,7 +497,11 @@ serviceOrdersRouter.patch("/:id/process", requireAuth, requireRole("MECHANIC", "
     if (insurance) {
       const from = insuranceSummary(before);
       const to = insuranceSummary(updated);
-      if (from !== to) events.push({ title: "Dados de seguro alterados", description: `${from} → ${to}` });
+      if (from !== to) {
+        events.push({ title: "Dados de seguro alterados", description: `${from} → ${to}` });
+        // Cobrança já gerada e ainda não recebida: passa a refletir a franquia nova.
+        await resyncOrderReceivables(tx, updated.id);
+      }
     }
     for (const event of events) {
       await tx.timelineEvent.create({

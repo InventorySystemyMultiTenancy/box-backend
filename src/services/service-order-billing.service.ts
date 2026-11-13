@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { prisma, AppTx } from "@/lib/prisma";
 import { HttpError } from "@/lib/http-error";
-import { dueDateFromInput, LEGACY_ORDER_INCOME_CATEGORIES, isDuplicatedOrderIncome, orderBillingTotal, splitInstallments } from "@/services/finance-rules";
+import { dueDateFromInput, LEGACY_ORDER_INCOME_CATEGORIES, isDuplicatedOrderIncome, orderBilling, splitInstallments } from "@/services/finance-rules";
 
 export const ORDER_RECEIVABLE_CATEGORY = "SERVIÇO";
 
@@ -58,6 +58,8 @@ export interface BillableOrder {
   id: string;
   code: string;
   estimatedMin: number | null;
+  hasInsurance?: boolean;
+  deductibleAmount?: number | null;
   vehicle: { plate: string | null; brand: string; model: string; owner: { client: { id: string } | null } };
 }
 
@@ -86,7 +88,9 @@ export async function createOrderReceivables(tx: AppTx, order: BillableOrder, ex
     where: { serviceOrderId: order.id },
     select: { status: true, estimatedValue: true, part: { select: { status: true } } },
   });
-  const total = orderBillingTotal(approvals, order.estimatedMin, extraValue);
+  // Projeto com seguro: a franquia sai do total — o cliente paga bruto - franquia.
+  const deductible = order.hasInsurance ? (order.deductibleAmount ?? 0) : 0;
+  const { gross, deductible: discount, total } = orderBilling(approvals, order.estimatedMin, extraValue, deductible);
   if (total <= 0) return [];
 
   const installments = splitInstallments(total, payment.installments ?? 1, payment.firstDueDate ? dueDateFromInput(payment.firstDueDate) : new Date());
@@ -111,11 +115,51 @@ export async function createOrderReceivables(tx: AppTx, order: BillableOrder, ex
           installmentNumber: installments.length > 1 ? inst.number : undefined,
           installmentTotal: installments.length > 1 ? installments.length : undefined,
           groupId,
+          ...(discount > 0 ? { orderGrossAmount: gross, deductibleAmount: discount } : {}),
         },
       })
     );
   }
   return created;
+}
+
+/**
+ * Franquia/seguro do projeto mudou depois de a cobrança já ter sido gerada: se nada foi
+ * recebido nem faturado em nota, refaz os valores com a franquia nova, mantendo forma de
+ * pagamento, parcelas e prazos. Com algo já recebido, não mexe (o admin ajusta no Financeiro).
+ */
+export async function resyncOrderReceivables(tx: AppTx, serviceOrderId: string) {
+  const existing = await tx.accountReceivable.findMany({
+    where: { serviceOrderId, status: { not: "CANCELLED" }, category: ORDER_RECEIVABLE_CATEGORY },
+    orderBy: [{ installmentNumber: "asc" }, { createdAt: "asc" }],
+    include: { _count: { select: { invoices: true } } },
+  });
+  if (existing.length === 0) return false;
+  // Só a cobrança principal (sem as contas avulsas de "valor extra na entrega").
+  if (existing.some((r) => r.description.endsWith("(valor extra na entrega)"))) return false;
+  if (!existing.every((r) => (r.status === "PENDING" || r.status === "OVERDUE") && r._count.invoices === 0)) return false;
+
+  const order = await tx.serviceOrder.findUniqueOrThrow({ where: { id: serviceOrderId } });
+  const approvals = await tx.approval.findMany({
+    where: { serviceOrderId },
+    select: { status: true, estimatedValue: true, part: { select: { status: true } } },
+  });
+  const deductible = order.hasInsurance ? (order.deductibleAmount ?? 0) : 0;
+  const { gross, deductible: discount, total } = orderBilling(approvals, order.estimatedMin, order.deliveryExtraValue ?? 0, deductible);
+  if (total <= 0) return false;
+
+  const amounts = splitInstallments(total, existing.length, new Date());
+  for (let i = 0; i < existing.length; i++) {
+    await tx.accountReceivable.update({
+      where: { id: existing[i].id },
+      data: {
+        amount: amounts[i].amount,
+        orderGrossAmount: discount > 0 ? gross : null,
+        deductibleAmount: discount > 0 ? discount : null,
+      },
+    });
+  }
+  return true;
 }
 
 /**
