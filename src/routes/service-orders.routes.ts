@@ -14,7 +14,7 @@ import { recordAudit } from "@/services/audit.service";
 import { createOrGetShareLink, revokeShareLink, getActiveShareLink, ShareLinkError } from "@/services/share-link.service";
 import { BILLABLE_ORDER_INCLUDE, billFinishedOrder, billOrderOnDelivery, resyncOrderReceivables } from "@/services/service-order-billing.service";
 import { clearServiceOrderAlerts } from "@/services/alerts.service";
-import { saveServiceOrderReportPdf } from "@/services/service-order-report.service";
+import { refreshFinishedReportPdfsForOwner, saveServiceOrderReportPdf } from "@/services/service-order-report.service";
 export const serviceOrdersRouter = Router();
 
 // Dono do veículo com o cadastro de cliente (CRM) — aparece e é editável dentro do projeto.
@@ -579,6 +579,8 @@ serviceOrdersRouter.patch("/:id/client", requireAuth, requireRole("MECHANIC", "A
 
   emitToOrder(order.id, "timeline:new", {});
   res.json({ owner: updated });
+  // PDFs de finalização já salvos passam a sair com os dados novos (em segundo plano).
+  void refreshFinishedReportPdfsForOwner(owner.id);
 });
 
 const statusSchema = z.object({

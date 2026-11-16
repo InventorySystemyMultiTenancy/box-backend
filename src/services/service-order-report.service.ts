@@ -1,4 +1,5 @@
 import fs from "fs";
+import { PLACEHOLDER_EMAIL_DOMAIN } from "@/services/clients.service";
 import path from "path";
 import PDFDocument from "pdfkit";
 import { prisma } from "@/lib/prisma";
@@ -86,7 +87,18 @@ function loadReportOrder(orderId: string) {
   return prisma.serviceOrder.findUniqueOrThrow({
     where: { id: orderId },
     include: {
-      vehicle: { include: { owner: { select: { name: true } } } },
+      vehicle: {
+        include: {
+          owner: {
+            select: {
+              name: true,
+              email: true,
+              phone: true,
+              client: { select: { name: true, phone: true, whatsapp: true, email: true, cpfCnpj: true } },
+            },
+          },
+        },
+      },
       parts: { orderBy: { createdAt: "asc" }, include: { responsible: { select: { name: true } } } },
       approvals: { orderBy: { createdAt: "asc" }, include: { partUsages: { include: { inventoryPart: { select: { name: true } } } } } },
       assignees: { orderBy: { createdAt: "asc" }, include: { user: { select: { name: true } } } },
@@ -160,9 +172,19 @@ export function renderServiceOrderReportPdf(order: ReportOrder): Promise<Buffer>
     .text(`Gerado em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })} · Etapa atual: ${STATUS_LABELS[order.status as keyof typeof STATUS_LABELS] ?? order.status}`);
   doc.moveDown(0.8);
 
+  // Dados do cliente lidos na hora (o PDF sempre sai com o cadastro atual).
+  const owner = order.vehicle.owner;
+  const ownerEmail = owner?.client?.email ?? owner?.email ?? null;
+  const clientRows: [string, string][] = [
+    ["Cliente", owner?.client?.name ?? owner?.name ?? "Não informado"],
+    ["Telefone", owner?.client?.phone ?? owner?.phone ?? ""],
+    ["WhatsApp", owner?.client?.whatsapp ?? ""],
+    ["E-mail", ownerEmail && !ownerEmail.endsWith(`@${PLACEHOLDER_EMAIL_DOMAIN}`) ? ownerEmail : ""],
+    ["CPF/CNPJ", owner?.client?.cpfCnpj ?? ""],
+  ];
   const summary: [string, string][] = [
     ["Ordem", order.code],
-    ["Cliente", order.vehicle.owner?.name ?? "Não informado"],
+    ...clientRows.filter(([label, value]) => label === "Cliente" || value.trim() !== ""),
     ["Veículo", vehicle],
     ["Placa", order.vehicle.plate ?? "Não informada"],
     ["Quilometragem", `${order.vehicle.mileage.toLocaleString("pt-BR")} km`],
@@ -276,15 +298,46 @@ export function renderServiceOrderReportPdf(order: ReportOrder): Promise<Buffer>
   return done;
 }
 
-/** Gera o PDF, salva (Cloudinary ou /uploads) e registra como mídia DOCUMENT da OS. */
-export async function saveServiceOrderReportPdf(orderId: string) {
+export const FINISHED_PDF_LABEL = "PDF de finalização do serviço";
+
+async function writeReportPdf(orderId: string) {
   const order = await prisma.serviceOrder.findUniqueOrThrow({ where: { id: orderId }, select: { code: true } });
   const buffer = await buildServiceOrderReportPdf(orderId);
   const filename = `${order.code}-servico-${Date.now()}.pdf`;
   const filePath = path.join(UPLOADS_DIR, filename);
   await fs.promises.writeFile(filePath, buffer);
-  const url = await persistLocalFile(filePath, filename, "application/pdf");
+  return persistLocalFile(filePath, filename, "application/pdf");
+}
+
+/** Gera o PDF, salva (Cloudinary ou /uploads) e registra como mídia DOCUMENT da OS. */
+export async function saveServiceOrderReportPdf(orderId: string) {
+  const url = await writeReportPdf(orderId);
   return prisma.media.create({
-    data: { serviceOrderId: orderId, url, type: "DOCUMENT", label: "PDF de finalização do serviço" },
+    data: { serviceOrderId: orderId, url, type: "DOCUMENT", label: FINISHED_PDF_LABEL },
   });
+}
+
+/**
+ * Dados do cliente mudaram: refaz o PDF de finalização já salvo dos projetos dele (o mesmo
+ * registro de mídia passa a apontar para o arquivo novo). Projetos sem PDF salvo não mudam —
+ * o PDF gerado pelo botão do projeto já sai sempre com os dados atuais.
+ */
+export async function refreshFinishedReportPdfsForOwner(ownerId: string) {
+  const media = await prisma.media.findMany({
+    where: { type: "DOCUMENT", label: FINISHED_PDF_LABEL, serviceOrder: { vehicle: { ownerId } } },
+    select: { id: true, serviceOrderId: true },
+    orderBy: { createdAt: "desc" },
+  });
+  // Um por projeto (o mais recente).
+  const seen = new Set<string>();
+  for (const m of media) {
+    if (!m.serviceOrderId || seen.has(m.serviceOrderId)) continue;
+    seen.add(m.serviceOrderId);
+    try {
+      const url = await writeReportPdf(m.serviceOrderId);
+      await prisma.media.update({ where: { id: m.id }, data: { url } });
+    } catch (err) {
+      console.error("Falha ao atualizar o PDF de finalização", m.serviceOrderId, err);
+    }
+  }
 }
