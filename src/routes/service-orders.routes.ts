@@ -17,8 +17,17 @@ import { clearServiceOrderAlerts } from "@/services/alerts.service";
 import { saveServiceOrderReportPdf } from "@/services/service-order-report.service";
 export const serviceOrdersRouter = Router();
 
+// Dono do veículo com o cadastro de cliente (CRM) — aparece e é editável dentro do projeto.
+const OWNER_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  phone: true,
+  client: { select: { id: true, name: true, phone: true, whatsapp: true, email: true, cpfCnpj: true } },
+} as const;
+
 const orderInclude = {
-  vehicle: { include: { owner: { select: { id: true, name: true, email: true, phone: true } } } },
+  vehicle: { include: { owner: { select: OWNER_SELECT } } },
   timelineEvents: {
     orderBy: { occurredAt: "asc" as const },
     include: { media: true, author: { select: { name: true } } },
@@ -513,6 +522,63 @@ serviceOrdersRouter.patch("/:id/process", requireAuth, requireRole("MECHANIC", "
 
   if (events.length) emitToOrder(order.id, "timeline:new", {});
   res.json({ order });
+});
+
+const orderClientSchema = z.object({
+  name: z.string().trim().min(2, "Informe o nome do cliente.").max(120),
+  phone: z.string().trim().max(30).optional(),
+  whatsapp: z.string().trim().max(30).optional(),
+  email: z.string().trim().email("E-mail inválido.").optional().or(z.literal("")),
+  cpfCnpj: z.string().trim().max(20).optional(),
+});
+
+// Dados do cliente editados de dentro do projeto: atualiza o usuário dono do veículo (nome
+// que aparece no projeto/portal) e o cadastro de cliente (CRM) juntos — criando o cadastro
+// se o dono ainda não tiver um. Vale para todos os veículos/projetos desse cliente.
+serviceOrdersRouter.patch("/:id/client", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = orderClientSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0]?.message;
+    return res.status(400).json({ error: first ?? "Dados inválidos.", details: parsed.error.flatten() });
+  }
+
+  const order = await prisma.serviceOrder.findUnique({
+    where: { id: req.params.id },
+    select: { id: true, vehicle: { select: { owner: { select: { id: true, email: true, client: { select: { id: true } } } } } } },
+  });
+  if (!order) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+  const owner = order.vehicle.owner;
+
+  const { name, phone, whatsapp, cpfCnpj } = parsed.data;
+  const email = parsed.data.email?.trim() || null;
+  // E-mail é o login do portal: só troca se vier preenchido e não for de outro usuário.
+  if (email && email.toLowerCase() !== owner.email.toLowerCase()) {
+    const taken = await prisma.user.findFirst({ where: { email: { equals: email, mode: "insensitive" }, id: { not: owner.id } }, select: { id: true } });
+    if (taken) return res.status(409).json({ error: "Já existe outro usuário com este e-mail." });
+  }
+
+  const clientData = {
+    name,
+    phone: phone || null,
+    whatsapp: whatsapp || null,
+    email,
+    cpfCnpj: cpfCnpj || null,
+  };
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: owner.id },
+      data: { name, phone: phone || null, ...(email ? { email } : {}) },
+    });
+    if (owner.client) await tx.client.update({ where: { id: owner.client.id }, data: clientData });
+    else await tx.client.create({ data: { ...clientData, userId: owner.id } });
+    await tx.timelineEvent.create({
+      data: { serviceOrderId: order.id, title: "Dados do cliente atualizados", description: name, authorId: req.user!.id },
+    });
+    return tx.user.findUniqueOrThrow({ where: { id: owner.id }, select: OWNER_SELECT });
+  });
+
+  emitToOrder(order.id, "timeline:new", {});
+  res.json({ owner: updated });
 });
 
 const statusSchema = z.object({
