@@ -163,6 +163,7 @@ authRouter.post("/login", loginLimiter, async (req, res) => {
   if (!user.active) return res.status(403).json({ error: "Esta conta foi desativada. Fale com o administrador." });
 
   const token = signToken({ sub: user.id, role: user.role });
+  res.locals.userId = user.id; // aparece no log da requisição (middleware/request-log)
   res.json({ token, user: toPublicUser(user) });
 });
 

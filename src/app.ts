@@ -6,6 +6,7 @@ import { Prisma } from "@prisma/client";
 import { UploadTypeError } from "@/middleware/upload";
 import { HttpError } from "@/lib/http-error";
 import { requireAuth } from "@/middleware/auth";
+import { requestLog } from "@/middleware/request-log";
 import { requireServiceOrderAccess } from "@/lib/authorization";
 import { authRouter } from "@/routes/auth.routes";
 import { vehiclesRouter } from "@/routes/vehicles.routes";
@@ -56,6 +57,7 @@ export const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000", exposedHeaders: ["X-Renewed-Token"] }));
 // Render/proxies na frente do Node — necessário pro rate limit enxergar o IP real do cliente.
 app.set("trust proxy", 1);
+app.use(requestLog);
 app.use(express.json());
 app.use(
   "/uploads",

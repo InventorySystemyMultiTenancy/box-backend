@@ -21,15 +21,29 @@ export async function resolveTokenUser(token: string) {
 export async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
+    res.locals.authFail = "sem-token";
     return res.status(401).json({ error: "Token ausente." });
   }
   let user: { id: string; role: string; issuedAt?: number } | null;
   try {
     user = await resolveTokenUser(header.slice(7));
-  } catch {
+  } catch (err) {
+    const name = (err as Error)?.name;
+    // Só erro do PRÓPRIO token desloga (401). Antes, qualquer falha aqui — inclusive o
+    // banco oscilando por um instante — respondia 401 e o site jogava a pessoa pro login.
+    if (name !== "TokenExpiredError" && name !== "JsonWebTokenError" && name !== "NotBeforeError") {
+      console.error("[auth] falha ao validar sessão (não é o token):", err);
+      return res.status(503).json({ error: "Servidor indisponível no momento. Tente novamente." });
+    }
+    // Motivo só no log (ver middleware/request-log): vencido x assinatura de outro segredo
+    // (JWT_SECRET trocado derruba todo mundo) x token corrompido.
+    res.locals.authFail = name === "TokenExpiredError" ? "token-vencido" : `token-invalido(${(err as Error).message})`;
     return res.status(401).json({ error: "Token inválido ou expirado." });
   }
-  if (!user) return res.status(401).json({ error: "Sua conta está desativada ou não existe mais." });
+  if (!user) {
+    res.locals.authFail = "usuario-inativo-ou-removido";
+    return res.status(401).json({ error: "Sua conta está desativada ou não existe mais." });
+  }
   // Sessão deslizante: quem está usando o sistema recebe um token novo (o site troca
   // sozinho) — só cai depois de JWT_EXPIRES_IN sem uso, nunca no meio do trabalho.
   if (user.issuedAt && Date.now() / 1000 - user.issuedAt > TOKEN_RENEW_AFTER_SECONDS) {
