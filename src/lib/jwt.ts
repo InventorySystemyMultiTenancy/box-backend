@@ -6,9 +6,11 @@ if (!process.env.JWT_SECRET && process.env.NODE_ENV === "production") {
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-only-secret-change-in-production";
-// Sessão: o token vale JWT_EXPIRES_IN e é renovado a cada uso (ver requireAuth), então na
-// prática a pessoa só é deslogada depois desse tempo SEM usar o sistema (padrão 3 horas).
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "3h";
+// Sessão: o token vale SESSION_TTL e é renovado a cada uso (ver requireAuth), então na
+// prática a pessoa só é deslogada depois desse tempo SEM usar o sistema (padrão 30 dias —
+// no celular da oficina ninguém deve ter que logar de novo a cada uso). A variável antiga
+// JWT_EXPIRES_IN (3h) é ignorada de propósito para não manter a sessão curta.
+const JWT_EXPIRES_IN = process.env.SESSION_TTL || "30d";
 /** Token com mais que isto de idade ganha um novo a cada requisição autenticada. */
 export const TOKEN_RENEW_AFTER_SECONDS = 10 * 60;
 
