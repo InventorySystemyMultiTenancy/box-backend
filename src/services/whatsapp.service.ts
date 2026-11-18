@@ -314,8 +314,11 @@ export function clientMessage(order: ReadyOrderInfo, clientName: string | null, 
 }
 
 function shareUrl(token: string) {
-  const base = (process.env.FRONTEND_URL || process.env.CORS_ORIGIN || "http://localhost:3000").replace(/\/+$/, "");
-  return `${base}/acompanhar/${token}`;
+  // CORS_ORIGIN pode ter vários endereços separados por vírgula: o link usa o primeiro.
+  const base = (process.env.FRONTEND_URL || process.env.CORS_ORIGIN || "http://localhost:3000").split(",")[0].trim().replace(/\/+$/, "");
+  // Links antigos podem ter "_" no código; codificado, o WhatsApp não transforma o trecho
+  // entre dois "_" em itálico (o que cortava o link). A página decodifica de volta.
+  return `${base}/acompanhar/${token.replace(/_/g, "%5F")}`;
 }
 
 /**

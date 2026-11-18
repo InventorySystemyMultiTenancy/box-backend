@@ -9,8 +9,20 @@ export class ShareLinkError extends Error {
 
 const LINK_DURATION_DAYS = 30;
 
+const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+const TOKEN_LENGTH = 32;
+
+// Só letras e números: o base64url de antes tinha "_" e "-", e no WhatsApp um trecho entre
+// dois "_" vira itálico — o link chegava cortado/quebrado na mensagem.
 function generateToken() {
-  return crypto.randomBytes(24).toString("base64url");
+  let token = "";
+  while (token.length < TOKEN_LENGTH) {
+    for (const byte of crypto.randomBytes(TOKEN_LENGTH)) {
+      // 248 = 62 × 4: descarta o resto para todas as letras terem a mesma chance.
+      if (byte < 248 && token.length < TOKEN_LENGTH) token += TOKEN_ALPHABET[byte % 62];
+    }
+  }
+  return token;
 }
 
 function isActive(link: { revokedAt: Date | null; expiresAt: Date }) {
