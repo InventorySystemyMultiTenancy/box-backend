@@ -58,6 +58,15 @@ app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000", expos
 // Render/proxies na frente do Node — necessário pro rate limit enxergar o IP real do cliente.
 app.set("trust proxy", 1);
 app.use(requestLog);
+// Respostas da API são pessoais e mudam a cada uso (inclusive o X-Renewed-Token): nada de
+// cache no navegador nem 304. Com cache, o Chrome reaproveitava uma resposta antiga
+// guardada JUNTO com um X-Renewed-Token de dias atrás — o site trocava o token bom por um
+// velho/vencido e jogava a pessoa pro login (e ficava num vai-e-vem de requisições).
+app.set("etag", false);
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
 app.use(express.json());
 app.use(
   "/uploads",
