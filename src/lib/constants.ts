@@ -98,7 +98,10 @@ export const PART_KEYS = [
   "arrefecimento",
   "combustivel",
   "carroceria",
+  // Diagnóstico único do projeto (serviço em texto livre + descrição analisada pela IA).
+  "diagnostico",
 ] as const;
+export const DIAGNOSIS_PART_KEY = "diagnostico";
 export type PartKey = (typeof PART_KEYS)[number];
 
 // Posição do problema no carro (VehiclePart.axle/side). Freio/pneu/suspensão já pedem o

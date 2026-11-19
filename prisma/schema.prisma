@@ -755,6 +755,9 @@ model VehiclePart {
   // valem mais que as palavras do nome/observação ("dianteira", "esquerdo"...).
   axle              String? // dianteiro | traseiro
   side              String? // esquerdo | direito | ambos
+  // Diagnóstico único (key "diagnostico"): pontos marcados pela IA a partir da descrição —
+  // [{ zone, x, y, excerpt, reason }] (ver services/diagnosis-spots.service.ts).
+  aiSpots           Json?
   responsibleId     String?
   responsible       User?        @relation("PartResponsible", fields: [responsibleId], references: [id])
   warranty          String? // texto livre (legado, exibido ao cliente)

@@ -29,6 +29,7 @@ const PART_LABELS: Record<(typeof PART_KEYS)[number], string> = {
   arrefecimento: "Arrefecimento",
   combustivel: "Combustível",
   carroceria: "Carroceria",
+  diagnostico: "Diagnóstico",
 };
 
 function inferProblemKey(text: string): (typeof PART_KEYS)[number] {

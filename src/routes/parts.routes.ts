@@ -5,7 +5,9 @@ import { requireAuth, requireRole, AuthedRequest } from "@/middleware/auth";
 import { canAccessServiceOrder } from "@/lib/authorization";
 import { emitToOrder } from "@/sockets";
 import { upload, guessMediaType, persistUploadedFile } from "@/middleware/upload";
-import { PART_AXLES, PART_KEYS, PART_SIDES, PART_STATUSES, POSITION_PART_KEYS, STATUS_PROGRESS } from "@/lib/constants";
+import { DIAGNOSIS_PART_KEY, PART_AXLES, PART_KEYS, PART_SIDES, PART_STATUSES, POSITION_PART_KEYS, STATUS_PROGRESS } from "@/lib/constants";
+import { Prisma } from "@prisma/client";
+import { analyzeDiagnosisSpots, DiagnosisSpot } from "@/services/diagnosis-spots.service";
 import { HttpError } from "@/lib/http-error";
 import { roundMoney } from "@/services/finance-rules";
 export const partsRouter = Router({ mergeParams: true });
@@ -51,8 +53,9 @@ partsRouter.put("/:key", requireAuth, requireRole("MECHANIC", "ADMIN"), async (r
 });
 
 const problemSchema = z.object({
-  key: z.enum(PART_KEYS),
-  name: z.string().min(1),
+  // Sem key = diagnóstico único do projeto ("name" é o serviço, texto livre).
+  key: z.enum(PART_KEYS).default(DIAGNOSIS_PART_KEY),
+  name: z.string().trim().min(1).max(200),
   description: z.string().min(4),
   wearLevel: z.coerce.number().min(0).max(100).optional(),
   estimatedValue: z.coerce.number().min(0).optional(),
@@ -88,6 +91,19 @@ function parseUsages(raw: string | undefined): z.infer<typeof usageSchema> {
  * ter sido editado à mão ("Peças do serviço") —; peça nova entra com o preço do cadastro.
  * Peça é só catálogo com preço — não há estoque a movimentar.
  */
+/** Veículo da ordem em texto ("Toyota Corolla 2022") — contexto para a IA do diagnóstico. */
+async function vehicleLabel(orderId: string) {
+  const order = await prisma.serviceOrder.findUnique({
+    where: { id: orderId },
+    select: { vehicle: { select: { brand: true, model: true, year: true } } },
+  });
+  return order ? `${order.vehicle.brand} ${order.vehicle.model} ${order.vehicle.year}` : undefined;
+}
+
+function spotsJson(spots: DiagnosisSpot[]) {
+  return spots as unknown as Prisma.InputJsonValue;
+}
+
 async function replacePartUsages(approval: { id: string }, usages: z.infer<typeof usageSchema>, tx: AppTx) {
   const previous = await tx.problemPartUsage.findMany({ where: { approvalId: approval.id }, select: { inventoryPartId: true, unitCostSnapshot: true } });
   const previousCost = new Map(previous.map((u) => [u.inventoryPartId, Number(u.unitCostSnapshot)]));
@@ -325,6 +341,22 @@ partsRouter.post(
     const files = Array.isArray(req.files) ? req.files : [];
     const { key, name, description, wearLevel } = parsed.data;
     const position = POSITION_PART_KEYS.has(key) ? { axle: parsed.data.axle ?? null, side: parsed.data.side ?? null } : {};
+    const isDiagnosis = key === DIAGNOSIS_PART_KEY;
+    // Diagnóstico é um só por projeto: o segundo cadastro vira edição do que já existe.
+    if (isDiagnosis) {
+      const existingDiagnosis = await prisma.approval.findFirst({
+        where: { serviceOrderId: orderId, part: { key: DIAGNOSIS_PART_KEY } },
+        select: { id: true },
+      });
+      if (existingDiagnosis) {
+        return res.status(409).json({ error: "Este projeto já tem um diagnóstico. Edite o diagnóstico existente no modelo do veículo." });
+      }
+    }
+    // Pontos no modelo do veículo marcados pela IA a partir da descrição (antes da
+    // transação: a chamada externa pode levar alguns segundos).
+    const aiSpots = isDiagnosis
+      ? { aiSpots: spotsJson(await analyzeDiagnosisSpots({ service: name, description, vehicle: await vehicleLabel(orderId) })) }
+      : {};
     const isAdmin = req.user!.role === "ADMIN";
     const laborValue = isAdmin ? parsed.data.laborValue ?? parsed.data.estimatedValue : undefined;
     const uploadedFiles = await Promise.all(
@@ -345,6 +377,7 @@ partsRouter.post(
           note: description,
           wearLevel,
           ...position,
+          ...aiSpots,
           responsibleId: req.user!.id,
         },
         update: {
@@ -353,6 +386,7 @@ partsRouter.post(
           note: description,
           wearLevel,
           ...position,
+          ...aiSpots,
           responsibleId: req.user!.id,
         },
       });
@@ -361,7 +395,7 @@ partsRouter.post(
         data: {
           serviceOrderId: orderId,
           partId: part.id,
-          title: "Novo problema identificado",
+          title: isDiagnosis ? "Diagnóstico" : "Novo problema identificado",
           description: `${name}: ${description}`,
           laborValue,
           partsValue: 0,
@@ -384,7 +418,7 @@ partsRouter.post(
       const event = await tx.timelineEvent.create({
         data: {
           serviceOrderId: orderId,
-          title: "Novo problema identificado",
+          title: isDiagnosis ? "Diagnóstico registrado" : "Novo problema identificado",
           description: `${name}: ${description}`,
           authorId: req.user!.id,
         },
@@ -436,6 +470,64 @@ partsRouter.post(
     });
 
     res.status(201).json(result);
+  }
+);
+
+const editDiagnosisSchema = z.object({
+  service: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(4),
+});
+
+// Edita o serviço/descrição do diagnóstico único. Se o texto mudou, a IA refaz os pontos
+// no modelo do veículo (preço e peças continuam pelas rotas de sempre).
+partsRouter.patch(
+  "/problems/:approvalId/diagnosis",
+  requireAuth,
+  requireRole("MECHANIC", "ADMIN"),
+  async (req: AuthedRequest<{ orderId: string; approvalId: string }>, res) => {
+    const orderId = req.params.orderId;
+    const allowed = await canAccessServiceOrder(req.user!.id, req.user!.role, orderId);
+    if (!allowed) return res.status(403).json({ error: "Sem acesso a esta ordem de serviço." });
+
+    const parsed = editDiagnosisSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Informe o serviço e a descrição do diagnóstico.", details: parsed.error.flatten() });
+
+    const existing = await prisma.approval.findUnique({ where: { id: req.params.approvalId }, include: { part: true } });
+    if (!existing || existing.serviceOrderId !== orderId || !existing.part || existing.part.key !== DIAGNOSIS_PART_KEY) {
+      return res.status(404).json({ error: "Diagnóstico não encontrado nesta ordem." });
+    }
+    const part = existing.part;
+
+    const { service, description } = parsed.data;
+    const textChanged = part.name !== service || (part.note ?? "") !== description;
+    const noSpotsYet = !Array.isArray(part.aiSpots) || part.aiSpots.length === 0;
+    const aiSpots =
+      textChanged || noSpotsYet
+        ? { aiSpots: spotsJson(await analyzeDiagnosisSpots({ service, description, vehicle: await vehicleLabel(orderId) })) }
+        : {};
+
+    const result = await prisma.$transaction(async (tx) => {
+      const updatedPart = await tx.vehiclePart.update({
+        where: { id: part.id },
+        data: { name: service, note: description, ...aiSpots },
+        include: { media: true, responsible: { select: { name: true } } },
+      });
+      const approval = await tx.approval.update({
+        where: { id: existing.id },
+        data: { description: `${service}: ${description}` },
+        include: { media: true, partUsages: { include: { inventoryPart: true } } },
+      });
+      const event = await tx.timelineEvent.create({
+        data: { serviceOrderId: orderId, title: "Diagnóstico editado", description: `${service}: ${description}`, authorId: req.user!.id },
+        include: { media: true, author: { select: { name: true } } },
+      });
+      return { part: updatedPart, approval, event };
+    });
+
+    emitToOrder(orderId, "part:update", { part: result.part });
+    emitToOrder(orderId, "approval:update", { approval: result.approval });
+    emitToOrder(orderId, "timeline:new", { event: result.event });
+    res.json(result);
   }
 );
 
