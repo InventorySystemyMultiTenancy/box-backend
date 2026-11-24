@@ -14,7 +14,7 @@ import { recordAudit } from "@/services/audit.service";
 import { createOrGetShareLink, revokeShareLink, getActiveShareLink, ShareLinkError } from "@/services/share-link.service";
 import { BILLABLE_ORDER_INCLUDE, billFinishedOrder, billOrderOnDelivery, resyncOrderReceivables } from "@/services/service-order-billing.service";
 import { clearServiceOrderAlerts } from "@/services/alerts.service";
-import { refreshFinishedReportPdfsForOwner, saveServiceOrderReportPdf } from "@/services/service-order-report.service";
+import { refreshFinishedReportPdfsForOwner, refreshFinishedReportPdf, saveServiceOrderReportPdf } from "@/services/service-order-report.service";
 export const serviceOrdersRouter = Router();
 
 // Dono do veículo com o cadastro de cliente (CRM) — aparece e é editável dentro do projeto.
@@ -793,6 +793,54 @@ serviceOrdersRouter.patch(
     res.json({ order: finalized, reportUrl });
   }
 );
+
+const pickupSchema = z.object({ description: z.string().trim().max(2000).optional() });
+
+// "Confirmar retirada": o veículo pronto saiu da empresa. Registra data, descrição e quem
+// confirmou; entra na timeline e no PDF (o PDF de finalização salvo é refeito).
+serviceOrdersRouter.patch("/:id/pickup", requireAuth, requireRole("MECHANIC", "ADMIN"), async (req: AuthedRequest<{ id: string }>, res) => {
+  const parsed = pickupSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: "Descrição inválida.", details: parsed.error.flatten() });
+
+  const existing = await prisma.serviceOrder.findUnique({ where: { id: req.params.id } });
+  if (!existing) return res.status(404).json({ error: "Ordem de serviço não encontrada." });
+  if (existing.status !== "READY_FOR_PICKUP") {
+    return res.status(409).json({ error: "Só é possível confirmar a retirada de um projeto finalizado e pronto para retirada." });
+  }
+  if (existing.pickedUpAt) return res.status(409).json({ error: "A retirada deste veículo já foi confirmada." });
+
+  const author = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } });
+  const description = parsed.data.description || null;
+  const pickedUpAt = new Date();
+
+  await prisma.$transaction(async (tx) => {
+    await tx.serviceOrder.update({
+      where: { id: existing.id },
+      data: { pickedUpAt, pickupDescription: description, pickupConfirmedByName: author?.name ?? null },
+    });
+    await tx.timelineEvent.create({
+      data: {
+        serviceOrderId: existing.id,
+        title: "Veículo retirado da empresa",
+        description: description ?? "Retirada do veículo confirmada.",
+        occurredAt: pickedUpAt,
+        authorId: req.user!.id,
+      },
+    });
+  });
+
+  // PDF com a retirada: atualiza o PDF de finalização salvo (ou cria, se não houver).
+  let reportUrl: string | null = null;
+  try {
+    reportUrl = await refreshFinishedReportPdf(existing.id);
+  } catch (err) {
+    console.error("Falha ao atualizar o PDF após a retirada", err);
+  }
+
+  const order = await prisma.serviceOrder.findUniqueOrThrow({ where: { id: existing.id }, include: orderInclude });
+  emitToOrder(order.id, "timeline:new", {});
+  res.json({ order: hidePricesForMechanic(order, req.user!.role), reportUrl });
+});
 
 // "Dar baixa": admin encerra o projeto independente de qualquer aprovação/confirmação
 // do cliente — a única exigência é que o veículo já esteja pronto para retirada. O

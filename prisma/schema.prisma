@@ -606,6 +606,10 @@ model ServiceOrder {
   completedAt         DateTime?
   deliveryDescription String?
   deliveryExtraValue  Decimal?  @db.Decimal(12, 2)
+  // "Confirmar retirada": o veículo pronto já saiu da empresa (vai na timeline e no PDF).
+  pickedUpAt            DateTime?
+  pickupDescription     String?
+  pickupConfirmedByName String?
   // "Dar baixa" — admin encerra o projeto mesmo sem confirmação do cliente. Some da
   // lista/kanban de projetos em andamento, mas o registro (e a garantia das peças,
   // independente disso) continua acessível normalmente.

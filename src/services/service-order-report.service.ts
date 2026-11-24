@@ -271,6 +271,17 @@ export function renderServiceOrderReportPdf(order: ReportOrder): Promise<Buffer>
   }
   doc.moveDown(0.5).font("Helvetica-Bold").fontSize(14).fillColor("#111").text(`Valor final: ${currency(values.total)}`, MARGIN, undefined, { width, align: "right" });
 
+  // "Confirmar retirada": quando o veículo saiu da empresa, quem confirmou e a descrição.
+  if (order.pickedUpAt) {
+    heading(doc, "Retirada do veículo");
+    const meta = [`Retirado em ${formatDateTime(order.pickedUpAt)}`, order.pickupConfirmedByName ? `confirmado por ${order.pickupConfirmedByName}` : null]
+      .filter(Boolean)
+      .join(" · ");
+    doc.font("Helvetica-Bold").fontSize(10).fillColor("#111").text(meta, MARGIN, undefined, { width });
+    if (order.pickupDescription) doc.font("Helvetica").fontSize(10).fillColor("#111").text(order.pickupDescription, MARGIN, undefined, { width });
+    doc.moveDown(0.4);
+  }
+
   // Observações digitadas ao avançar etapa / finalizar a entrega, com a data em que foram
   // registradas. Projeto entregue antes de existir a timeline com observação: usa a
   // descrição da entrega com a data de conclusão.
@@ -315,6 +326,22 @@ export async function saveServiceOrderReportPdf(orderId: string) {
   return prisma.media.create({
     data: { serviceOrderId: orderId, url, type: "DOCUMENT", label: FINISHED_PDF_LABEL },
   });
+}
+
+/**
+ * Refaz o PDF de finalização deste projeto (ex.: depois de confirmar a retirada): o registro
+ * mais recente passa a apontar para o arquivo novo; sem PDF salvo, cria um. Devolve a URL.
+ */
+export async function refreshFinishedReportPdf(orderId: string) {
+  const existing = await prisma.media.findFirst({
+    where: { serviceOrderId: orderId, type: "DOCUMENT", label: FINISHED_PDF_LABEL },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!existing) return (await saveServiceOrderReportPdf(orderId)).url;
+  const url = await writeReportPdf(orderId);
+  await prisma.media.update({ where: { id: existing.id }, data: { url } });
+  return url;
 }
 
 /**
