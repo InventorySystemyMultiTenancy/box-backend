@@ -9,7 +9,8 @@ import { createOrGetShareLink } from "@/services/share-link.service";
 //   EVOLUTION_API_URL         https://evolution.exemplo.com
 //   EVOLUTION_API_KEY         chave global da Evolution
 //   EVOLUTION_INSTANCE        nome da instância (padrão "box")
-//   WHATSAPP_NOTIFY_NUMBERS   equipe avisada ao finalizar: "Tania:5511999999999,Luiz:5511988888888"
+//   WHATSAPP_NOTIFY_NUMBERS   equipe avisada ao finalizar, por nome de usuário: "Tania,Luiz" (usa o
+//                             telefone do cadastro; "Tania:5511..." só se ela não tiver). Padrão: Tania
 //   WHATSAPP_NOTIFY_CLIENT    "false" desliga o aviso ao dono do veículo
 //   WHATSAPP_INTERVAL_SECONDS pausa entre mensagens (padrão 15, mínimo 8)
 //   FRONTEND_URL              base do link de acompanhamento (/acompanhar/<token>)
@@ -95,6 +96,43 @@ export function parseNotifyNumbers(value = process.env.WHATSAPP_NOTIFY_NUMBERS) 
       return { name: first.trim() || null, phone: normalizePhone(second) };
     })
     .filter((item): item is { name: string | null; phone: string } => Boolean(item.phone));
+}
+
+/**
+ * Equipe avisada ao finalizar. Cada nome em WHATSAPP_NOTIFY_NUMBERS ("Tania" ou
+ * "Tania:5511...") usa o telefone do cadastro do usuário com esse nome (usuário ativo da
+ * equipe); o número da variável só vale se o usuário não tiver telefone cadastrado.
+ * Sem a variável, avisa a Tania pelo telefone do cadastro dela.
+ */
+export async function teamRecipients(value = process.env.WHATSAPP_NOTIFY_NUMBERS) {
+  const entries = String(value || "Tania")
+    .split(/[,;\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const [first, second] = item.includes(":") ? item.split(":") : /\d{8,}/.test(item.replace(/\D/g, "")) ? ["", item] : [item, ""];
+      return { name: first.trim() || null, phone: normalizePhone(second) || null };
+    });
+  // Compara sem acento/maiúsculas ("Tania" acha "Tânia Souza").
+  const plain = (text: string) => text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim();
+  const staff = entries.some((entry) => entry.name)
+    ? await prisma.user.findMany({
+        where: { active: true, role: { not: "CUSTOMER" }, phone: { not: null } },
+        orderBy: { createdAt: "asc" },
+        select: { name: true, phone: true },
+      })
+    : [];
+  const result: { name: string | null; phone: string }[] = [];
+  for (const entry of entries) {
+    let phone = entry.phone;
+    if (entry.name) {
+      const name = plain(entry.name);
+      const user = staff.find((u) => plain(u.name) === name) ?? staff.find((u) => plain(u.name).startsWith(name));
+      phone = normalizePhone(user?.phone) || phone;
+    }
+    if (phone) result.push({ name: entry.name, phone });
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +373,7 @@ export async function notifyOrderReady(serviceOrderId: string, actorId: string) 
     });
     if (!order) return;
 
-    const recipients: { kind: "TEAM" | "CLIENT"; name: string | null; phone: string }[] = parseNotifyNumbers().map((r) => ({ kind: "TEAM", ...r }));
+    const recipients: { kind: "TEAM" | "CLIENT"; name: string | null; phone: string }[] = (await teamRecipients()).map((r) => ({ kind: "TEAM" as const, ...r }));
     const ownerPhone = normalizePhone(order.vehicle.owner?.phone);
     if (notifyClient() && ownerPhone) recipients.push({ kind: "CLIENT", name: order.vehicle.owner?.name ?? null, phone: ownerPhone });
     if (!recipients.length) return;
